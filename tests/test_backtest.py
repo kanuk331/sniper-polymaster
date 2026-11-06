@@ -162,7 +162,8 @@ def test_selection_samples_each_exclusion_reason_and_predictive_check():
     lots = [lot for i in range(6) for lot in sim([trade(10 + i, tx=f"0x{i}")], meta(1.0), Flat(0.4))]
     for lot in lots:
         lot.wallet = "w0"
-    assert predictive_check(lots, scores, latency_s=60)["wallets"] == 1
+    check = predictive_check(lots, scores, latency_s=60)
+    assert check["wallets"] == 1 and check["spearman_z_vs_follower_roi"] is None  # fewer than 5 wallets
 
 
 def test_position_mode_one_signal_per_position_after_min_notional():

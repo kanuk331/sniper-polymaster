@@ -205,6 +205,29 @@ async def cmd_wf_report(args: argparse.Namespace, settings: Settings, db: Databa
     print(f"written: {Path(args.out) / f'report-{label}.md'}")
 
 
+async def cmd_wf_watchlist(args: argparse.Namespace, settings: Settings, db: Database) -> None:
+    """Fresh selection with the frozen rules: universe of the last lookback window, scored as of --split."""
+    import dataclasses
+    from datetime import date
+
+    defaults = plan.load_plan(args.plan)[0]
+    split = args.split or date.today().isoformat()
+    period = dataclasses.replace(
+        defaults, name=args.name or f"live-{split}", split=split, role="dev", conditions="live watchlist",
+        gap_days=0, horizon_days=0,
+    )  # fmt: skip
+    data_api, gamma = DataApi.create(settings), GammaApi.create(settings)
+    try:
+        await walkforward.collect(db, period, data_api, gamma, Path(args.reports), concurrency=args.concurrency)
+    finally:
+        await data_api.aclose()
+        await gamma.aclose()
+    summary = await walkforward.watchlist(
+        db, period, settings, Path(args.out), primary=backtest.STRATEGIES[args.strategy], ff=copyability.FastFilter()
+    )
+    print(json.dumps(summary, indent=1, default=str))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sniper", description=__doc__)
     p.add_argument("--db", help="SQLite path (default: $SNIPER_DB_PATH or data/sniper.sqlite)")
@@ -294,6 +317,16 @@ def build_parser() -> argparse.ArgumentParser:
     wr.add_argument("--n-boot", type=int, default=1000)
     wr.add_argument("--out", default="reports/walkforward")
     wr.set_defaults(func=cmd_wf_report)
+
+    ww = wf_sub.add_parser("watchlist", help="score a fresh universe as of today with the frozen rules (for live)")
+    ww.add_argument("--plan", default="config/walkforward.toml", help="universe/lookback defaults are taken from it")
+    ww.add_argument("--split", help="as-of date (default: today)")
+    ww.add_argument("--name")
+    ww.add_argument("--strategy", default="position")
+    ww.add_argument("--concurrency", type=int, default=16)
+    ww.add_argument("--reports", default="reports/walkforward")
+    ww.add_argument("--out", default="reports/watchlist.csv")
+    ww.set_defaults(func=cmd_wf_watchlist)
 
     live_cli.register(sub)
     return p

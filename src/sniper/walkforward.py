@@ -10,6 +10,7 @@ import subprocess
 import time
 from collections import Counter
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -193,25 +194,27 @@ def holdout_guard(period: Period, out_dir: Path, *, confirm: bool, allow_rerun: 
     return commit
 
 
-async def evaluate(
+@dataclass
+class ScoredPeriod:
+    wallets: list[str]
+    status: dict[str, str]
+    scores: list[WalletScore]
+    copy: dict[str, Any]
+    meta: Meta
+    tiers_before: dict[str, int]
+    leads_before: list[dict[str, Any]]
+
+
+async def score_period(
     db: Database,
     period: Period,
     settings: Settings,
-    out_root: Path,
     *,
-    strategies: Sequence[backtest.CopyParams],
-    latencies: Sequence[int],
+    primary: backtest.CopyParams,
     ff: FastFilter,
     thresholds: Thresholds | None = None,
-    sampling: dict[str, int] | None = None,
-    confirm_holdout: bool = False,
-    allow_holdout_rerun: bool = False,
-    n_boot: int = 1000,
-) -> dict[str, Any]:
-    t0 = time.time()
-    out = period_dir(out_root, period)
-    commit = holdout_guard(period, out, confirm=confirm_holdout, allow_rerun=allow_holdout_rerun)
-    primary = strategies[0]
+) -> ScoredPeriod:
+    """Selection as of `period.as_of`: eligibility (activity cap), skill scoring, then the fast-trade filter."""
     wallets = db.universe(period.snapshot)
     start, end = period.window
     status = {w: wallet_status(db, w, start, end, period.activity_cap) for w in wallets}
@@ -243,9 +246,43 @@ async def evaluate(
         w: assess(pre_rows[w], meta, pre_book, smp, wallet=w, as_of=period.as_of, strategy=primary, ff=ff)
         for w, smp in samples.items()
     }
+    tiers_before = dict(Counter(s.tier for s in scores))
+    leads_before = [
+        {"wallet": s.wallet, "user_name": s.user_name, "tier": s.tier, "z": s.skill.z, "q_bh": s.q_bh,
+         "copy_flags": copy[s.wallet].flags if s.wallet in copy else []}
+        for s in scores if s.tier in ("candidate", "watch")
+    ]  # fmt: skip
     apply_flags(scores, {w: c.flags for w, c in copy.items()}, thresholds)
     for s in scores:
         s.copyability = copy.get(s.wallet)
+
+    return ScoredPeriod(wallets, status, scores, copy, meta, tiers_before, leads_before)
+
+
+async def evaluate(
+    db: Database,
+    period: Period,
+    settings: Settings,
+    out_root: Path,
+    *,
+    strategies: Sequence[backtest.CopyParams],
+    latencies: Sequence[int],
+    ff: FastFilter,
+    thresholds: Thresholds | None = None,
+    sampling: dict[str, int] | None = None,
+    confirm_holdout: bool = False,
+    allow_holdout_rerun: bool = False,
+    n_boot: int = 1000,
+) -> dict[str, Any]:
+    t0 = time.time()
+    out = period_dir(out_root, period)
+    commit = holdout_guard(period, out, confirm=confirm_holdout, allow_rerun=allow_holdout_rerun)
+    primary = strategies[0]
+    scored = await score_period(db, period, settings, primary=primary, ff=ff, thresholds=thresholds)
+    scores, copy, meta = scored.scores, scored.copy, scored.meta
+    wallets, status = scored.wallets, scored.status
+    tiers_before, leads_before = scored.tiers_before, scored.leads_before
+    start = period.window[0]
 
     chosen = backtest.choose_wallets_to_simulate(scores, **(sampling or {}))
     book = await price_book_for(
@@ -281,6 +318,9 @@ async def evaluate(
         "fast_filter": ff.__dict__,
         "universe": {"wallets": len(wallets), "status": dict(Counter(status.values()))},
         "score_tiers": tier_summary(scores),
+        "score_tiers_before_fast_filter": tiers_before,
+        "leads_before_fast_filter": leads_before,
+        "edge_heterogeneity": edge_heterogeneity(scores),
         "copyability_flags": dict(Counter(f for c in copy.values() for f in c.flags)),
         "simulated_wallets": dict(Counter(s.tier for s in chosen)),
         "leads": [score_row(s) for s in lead],
@@ -309,6 +349,26 @@ async def evaluate(
         )
     log.info("%s evaluated in %.0fs", period.name, time.time() - t0)
     return summary
+
+
+def edge_heterogeneity(scores: Sequence[WalletScore]) -> dict[str, float]:
+    """Between-wallet variance of the log-odds edge (DerSimonian-Laird) behind the shrinkage."""
+    import math
+
+    import numpy as np
+
+    from sniper.analytics import dersimonian_laird_tau2
+
+    pairs = [
+        (s.skill.theta, s.skill.theta_se) for s in scores if math.isfinite(s.skill.theta_se) and s.skill.theta_se > 0
+    ]
+    if len(pairs) < 3:
+        return {}
+    t, se = np.array([a for a, _ in pairs]), np.array([b for _, b in pairs])
+    w = 1 / se**2
+    mu = float((w * t).sum() / w.sum())
+    return {"wallets": len(pairs), "tau2": dersimonian_laird_tau2(t, se), "mu": mu,
+            "q": float((w * (t - mu) ** 2).sum()), "df": len(pairs) - 1}  # fmt: skip
 
 
 def write_csv(path: Path, rows: Sequence[dict[str, Any]]) -> None:
@@ -476,3 +536,14 @@ def render_markdown(r: dict[str, Any], primary: str, lat: int) -> str:
         ),
     ]  # fmt: skip
     return "\n".join(lines) + "\n"
+
+
+async def watchlist(
+    db: Database, period: Period, settings: Settings, out: Path, *, primary: backtest.CopyParams, ff: FastFilter
+) -> dict[str, Any]:
+    """Score wallets as of `period.as_of` with the frozen rules and write a scores CSV for `sniper live run`."""
+    scored = await score_period(db, period, settings, primary=primary, ff=ff)
+    write_scores(scored.scores, out)
+    return {"as_of": period.as_of, "status": dict(Counter(scored.status.values())),
+            "tiers_before_fast_filter": scored.tiers_before, "tiers": tier_summary(scored.scores)["tiers"],
+            "leads_before_fast_filter": scored.leads_before, "written": str(out)}  # fmt: skip

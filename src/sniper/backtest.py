@@ -404,8 +404,12 @@ def spearman(xs: Sequence[float], ys: Sequence[float]) -> float | None:
 def predictive_check(
     lots: Sequence[Lot], scores: Sequence[WalletScore], latency_s: int, min_fills: int = 5
 ) -> dict[str, Any]:
-    """Does the pre-split edge estimate rank wallets by out-of-sample follower ROI?"""
-    theta = {s.wallet: s.theta_shrunk for s in scores}
+    """Does the pre-split skill estimate rank wallets by out-of-sample follower ROI?
+
+    Uses the raw log-odds edge and the clustered z-score: when the between-wallet variance is estimated as zero,
+    the shrunk edge is identical for every wallet and carries no ranking information.
+    """
+    by_wallet = {s.wallet: s for s in scores}
     pnl: dict[str, float] = defaultdict(float)
     cost: dict[str, float] = defaultdict(float)
     fills: dict[str, int] = defaultdict(int)
@@ -414,9 +418,11 @@ def predictive_check(
             pnl[lot.wallet] += lot.pnl
             cost[lot.wallet] += lot.cost
             fills[lot.wallet] += 1
-    pairs = [(theta[w], pnl[w] / cost[w]) for w in fills if fills[w] >= min_fills and w in theta]
+    keep = [w for w in fills if fills[w] >= min_fills and w in by_wallet]
+    roi = [pnl[w] / cost[w] for w in keep]
     return {
         "latency_s": latency_s,
-        "wallets": len(pairs),
-        "spearman_theta_vs_follower_roi": spearman([a for a, _ in pairs], [b for _, b in pairs]),
+        "wallets": len(keep),
+        "spearman_theta_vs_follower_roi": spearman([by_wallet[w].skill.theta for w in keep], roi),
+        "spearman_z_vs_follower_roi": spearman([by_wallet[w].skill.z for w in keep], roi),
     }
