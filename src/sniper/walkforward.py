@@ -34,7 +34,9 @@ def period_dir(root: Path, period: Period) -> Path:
     return d
 
 
-async def collect(db: Database, period: Period, data_api: DataApi, gamma: GammaApi, out_root: Path) -> dict[str, Any]:
+async def collect(
+    db: Database, period: Period, data_api: DataApi, gamma: GammaApi, out_root: Path, *, concurrency: int = 16
+) -> dict[str, Any]:
     """Universe (markets closed inside the lookback) -> windowed activity backfill -> token/market enrichment."""
     t0 = time.time()
     migrated = db.migrate_sync_state(PHASE1_BACKFILL_SINCE)
@@ -58,7 +60,9 @@ async def collect(db: Database, period: Period, data_api: DataApi, gamma: GammaA
     log.info("%s: universe %d wallets", period.name, len(wallets))
     start, end = period.window
     requests_before = data_api.client.requests_made
-    status = await ingest.backfill_windows(db, data_api, wallets, start, end, cap=period.activity_cap)
+    status = await ingest.backfill_windows(
+        db, data_api, wallets, start, end, cap=period.activity_cap, concurrency=concurrency
+    )
     n_tokens, n_markets = await ingest.enrich(db, data_api, gamma)
     summary = {
         "period": period.name,
@@ -160,6 +164,14 @@ def read_lots(path: Path) -> list[Lot]:
 # --- evaluation ------------------------------------------------------------------------------------------------
 
 
+def wallet_status(db: Database, wallet: str, start: int, end: int, cap: int) -> str:
+    """'capped' depends only on how many rows the window holds, not on which period's backfill fetched them."""
+    status = db.window_status(wallet, start, end)
+    if status == "capped" or db.activity_count(wallet, start, end) >= cap:
+        return "capped"
+    return status
+
+
 def git_state() -> tuple[str, bool]:
     """(HEAD commit, whether src/ or config/ have uncommitted changes)."""
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
@@ -202,7 +214,7 @@ async def evaluate(
     primary = strategies[0]
     wallets = db.universe(period.snapshot)
     start, end = period.window
-    status = {w: db.window_status(w, start, end) for w in wallets}
+    status = {w: wallet_status(db, w, start, end, period.activity_cap) for w in wallets}
     complete = sorted(w for w, st in status.items() if st == "complete")
     log.info("%s: %d wallets, status %s", period.name, len(wallets), dict(Counter(status.values())))
 
