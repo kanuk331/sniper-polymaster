@@ -54,3 +54,10 @@
 | `taker_only=true` по умолчанию в `/v2/trades` | OpenAPI + сравнение выборок субагентом | ✅ (учтено в пробе) |
 | RTDS activity/trades: весь поток с `proxyWallet`, p50 ≈ 0.3 с | замер субагента на Node | ⚠️ не перепроверено |
 | Запрет VPN в ToS, Builder Code of Conduct требует geoblock | отчёт субагента | ⚠️ не перепроверено |
+
+## 2026-11-06 — фаза 1, чекпоинт 1
+- `uv sync`, затем `uv run pytest` → **12 passed** (test_http: пагинация, повторная отправка фильтров, max_items,
+  ретрай 429 с Retry-After, отсутствие ретрая на 400, лимит ретраев; test_db: идемпотентный upsert, сохранение
+  идентичных филлов внутри одной транзакции, вселенная, токены и рынки, окна цен, парсинг времени Gamma).
+- `uv run ruff check src tests` → All checks passed.
+- Живые проверки API: см. HISTORY (порядок сделок, окна, Gamma `condition_ids` + `closed`, хранение истории цен в Data API и CLOB).

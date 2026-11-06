@@ -1,15 +1,7 @@
 # NEXT_STEPS
 
-1. Получить от владельца решения (раздел 12 исследования): режим MVP, стек, банк и просадка, юрисдикция исполнения.
-2. Фаза 1 (после согласования), предварительный план:
-   - каркас проекта (Python 3.12, uv, ruff, pytest), конфиг через env, `.env.example` без секретов;
-   - клиент Data API v2 (cursor-пагинация, rate limiting, ретраи по 429/Retry-After, `taker_only=false`), Gamma, публичный CLOB;
-   - схема хранилища: wallets, trades, activity, positions, markets/events, pnl_points, price_history;
-   - вселенная кандидатов «на дату» (лидерборды по периодам и категориям, biggest-winners, holders) без survivorship;
-   - скоринг v0: фильтры архетипов → Z/θ̂ с группировкой по событиям → BH/BY → shrinkage → CLV;
-   - бэктест копирования: симуляция исполнения копировщика с задержками от 10 с до 15 мин, комиссиями и потолком цены;
-   - отчёт: список кандидатов по tier с метриками.
-3. Фаза 2: Telegram-бот (aiogram), Signal и Risk engine, paper trading, ежедневный отчёт.
-
-Ограничения среды: IP песочницы геоблокирован (US), поэтому исполнение ордеров отсюда не проверить.
-Чтение публичных данных работает.
+1. `src/sniper/ingest.py` + `src/sniper/cli.py`: `universe leaderboard|markets`, `backfill`, `enrich`.
+2. Аналитика и скоринг (`analytics.py`, `scoring.py`) с unit-тестами.
+3. Бэктест копирования + walk-forward (`backtest.py`), цены из CLOB `/prices-history?fidelity=1`.
+4. Живой прогон, отчёт в `docs/research/`, обновить README.
+5. Фаза 2 (после фазы 1): Telegram-бот (aiogram), RTDS-поток, paper-портфель.

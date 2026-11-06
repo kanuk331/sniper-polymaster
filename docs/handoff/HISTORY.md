@@ -25,3 +25,13 @@
 - Написан `docs/research/2026-11-06-polymarket-sniper.md`: вывод, источники данных, проба, верификация игрока,
   правила копирования, риск-менеджмент, архитектура MVP, план фаз, безопасность, юрисдикции.
 - Добавлен README. Из /tmp удалены клоны сторонних репозиториев, которые скачивал субагент для статического аудита.
+
+## 2026-11-06 — фаза 1, начало (решения владельца: алерты, Python, пока только paper, старт фазы 1)
+- Перед кодом проверено: `/v2/trades` отдаёт сделки по убыванию ts; `start/end` работают с `user`, но с `condition` игнорируются.
+  Gamma фильтрует `condition_ids` (повторяемый параметр) только вместе с явным `closed=true|false`;
+  `feeSchedule.rate` и `feeType` (например, `sports_fees_v3`) дают ставку комиссии и категорию.
+- История цен: Data API v2 хранит 60-секундные бары около 7 дней, потом 300 с, потом 3 ч.
+  CLOB `/prices-history?fidelity=1` отдаёт ~1-минутные точки и для сделок 150-дневной давности → бэктест берёт цены из CLOB.
+- Каркас проекта (uv, Python ≥3.11, `src/sniper`): `config`, `http` (token bucket по маршрутам, ретраи 429/5xx
+  с Retry-After, cursor-пагинация), `polymarket` (DataApi, GammaApi, ClobApi), `db` (SQLite: wallets, universe, activity,
+  sync_state, tokens, markets, prices, price_windows). Тесты: `tests/test_http.py`, `tests/test_db.py`.
