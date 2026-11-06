@@ -97,3 +97,7 @@
   `test_dersimonian_laird_not_swamped_by_noisy_wallets` (300 из 400 кошельков с SE=3: наивный τ²=0, DL ≈ 0.04).
 - `uv run pytest` → **38 passed**; `ruff check` → All checks passed.
 - Результаты v1 (`reports/wf-2026-09.json`, не в git) недействительны, см. HISTORY.
+
+## 2026-11-06 — агрегация ордеров
+- `uv run pytest` → **39 passed**; `ruff check` → All checks passed.
+- Результаты v2 (`reports/wf-2026-09-v2.json`) заменяются v3: v2 завышен из-за копирования отдельных филлов.

@@ -22,7 +22,7 @@ def meta(y0: float | None = 1.0, fee: float = 0.04) -> Meta:
     return Meta(tokens, {"a": MarketMeta("a", "politics", fee, 10)})
 
 
-def trade(ts, side="BUY", price=0.40, size=100.0, token="a-0"):
+def trade(ts, side="BUY", price=0.40, size=100.0, token="a-0", tx=None):
     return {
         "ts": ts,
         "type": "TRADE",
@@ -32,6 +32,7 @@ def trade(ts, side="BUY", price=0.40, size=100.0, token="a-0"):
         "token_id": token,
         "condition_id": "a",
         "usdc_size": price * size,
+        "tx_hash": tx or f"0x{ts}{side}{price}",
     }
 
 
@@ -128,3 +129,19 @@ def test_follower_never_buys_cheaper_or_sells_dearer_than_leader():
     r = simulate_copy(rows, meta(0.0), flat(0.42), start=0, end=2000, params=p)
     assert r.n_filled == 1
     assert r.proceeds == pytest.approx(100 / 0.43 * 0.30)
+
+
+def test_book_sweep_is_one_signal_priced_at_worst_level():
+    from sniper.backtest import aggregate_orders
+
+    sweep = [
+        trade(1000, price=0.03, size=100, tx="0xs"),
+        trade(1000, price=0.05, size=100, tx="0xs"),
+        trade(1000, price=0.07, size=100, tx="0xs"),
+    ]
+    [order] = aggregate_orders(sweep)
+    assert order["size"] == 300 and order["price"] == pytest.approx(0.05) and order["worst_price"] == 0.07
+    p = CopyParams(half_spread=0.01, max_premium=0.03, min_price=0.0)
+    r = simulate_copy(sweep, meta(1.0, fee=0.0), flat(0.03), start=0, end=2000, params=p)
+    assert r.n_signals == 1 and r.n_filled == 1
+    assert r.pnl == pytest.approx(100 / 0.07 - 100)  # not 100 / 0.04: the cheap levels are gone

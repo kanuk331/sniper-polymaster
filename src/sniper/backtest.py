@@ -123,6 +123,34 @@ class _Book:
         return q
 
 
+def aggregate_orders(rows: Sequence[Row]) -> list[dict[str, Any]]:
+    """Collapse the fills of one leader order (same tx, token and side) into a single signal.
+
+    A taker order that sweeps the book shows up as many fills at rising prices. Copying each fill would hand the
+    follower the cheap levels the leader already consumed, so a signal carries the VWAP (`price`) and the worst
+    level reached (`worst_price`: highest for buys, lowest for sells), which bounds what the follower can get.
+    """
+    out: list[dict[str, Any]] = []
+    index: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for r in rows:
+        if r["type"] != "TRADE" or not r["token_id"] or not r["tx_hash"]:
+            out.append(dict(r))
+            continue
+        key = (r["tx_hash"], r["token_id"], r["side"])
+        agg = index.get(key)
+        if agg is None:
+            agg = dict(r) | {"notional": r["size"] * r["price"], "worst_price": r["price"]}
+            index[key] = agg
+            out.append(agg)
+            continue
+        agg["size"] += r["size"]
+        agg["notional"] += r["size"] * r["price"]
+        agg["price"] = agg["notional"] / agg["size"] if agg["size"] else r["price"]
+        worse = max if r["side"] == "BUY" else min
+        agg["worst_price"] = worse(agg["worst_price"], r["price"])
+    return out
+
+
 def simulate_copy(
     rows: Sequence[Row], meta: Meta, price_at: PriceFn, *, start: int, end: int, params: CopyParams, wallet: str = ""
 ) -> CopyResult:
@@ -141,7 +169,7 @@ def simulate_copy(
         if p is None:
             res.skips["no_price"] += 1
             return
-        price = max(p + params.half_spread, r["price"])
+        price = max(p + params.half_spread, r.get("worst_price", r["price"]))
         if price > r["price"] + params.max_premium:
             res.skips["premium"] += 1
             return
@@ -173,7 +201,7 @@ def simulate_copy(
             res.proceeds += q * p
             res.fees += taker_fee(q, p, fee_rate(token))
 
-    for r in rows:
+    for r in aggregate_orders(rows):
         token = meta.tokens.get(r["token_id"]) if r["token_id"] else None
         in_window = start <= r["ts"] < end
         kind = r["type"]
@@ -187,7 +215,7 @@ def simulate_copy(
             else:
                 leader[tid] = max(0.0, before - r["size"])
                 if in_window and before > 0:
-                    exit_(tid, min(1.0, r["size"] / before), r["ts"], r["price"])
+                    exit_(tid, min(1.0, r["size"] / before), r["ts"], r.get("worst_price", r["price"]))
         elif kind in ("MERGE", "SPLIT"):
             for t in (meta.by_condition.get(r["condition_id"]) or {}).values():
                 before = leader[t.token_id]
