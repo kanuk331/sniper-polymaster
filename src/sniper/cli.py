@@ -10,10 +10,10 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sniper import ingest, scoring
+from sniper import backtest, ingest, scoring
 from sniper.config import Settings
 from sniper.db import Database
-from sniper.polymarket import DataApi, GammaApi
+from sniper.polymarket import ClobApi, DataApi, GammaApi
 
 log = logging.getLogger("sniper")
 
@@ -114,6 +114,77 @@ async def cmd_score(args: argparse.Namespace, settings: Settings, db: Database) 
     print(f"written: {args.out}")
 
 
+async def cmd_backtest(args: argparse.Namespace, settings: Settings, db: Database) -> None:
+    wallets = _csv(args.wallets) if args.wallets else (db.universe(args.snapshot) or db.wallets_with_activity())
+    split = parse_date(args.split)
+    end = split + int(args.horizon_days * 86400)
+    latencies = [int(x) for x in _csv(args.latencies)]
+    base = backtest.CopyParams(
+        stake_usdc=args.stake, half_spread=args.half_spread, max_premium=args.max_premium, max_signals=args.max_signals
+    )
+    meta, scores = backtest.walk_forward_scores(
+        db, [w.lower() for w in wallets], split_ts=split, gap_days=args.gap_days
+    )
+    chosen = backtest.choose_wallets_to_simulate(
+        scores, include_excluded=args.sample_excluded, include_noise=args.sample_noise, seed=args.seed
+    )
+    print(f"scored {len(scores)} wallets as of split-{args.gap_days}d: {scoring.tier_summary(scores)['tiers']}")
+    print(f"simulating {len(chosen)} wallets over [{args.split}, +{args.horizon_days}d], latencies {latencies}")
+
+    points = []
+    for s in chosen:
+        pts = backtest.signal_points(db.activity(s.wallet, until=end), split, end)
+        points += pts[: args.max_signals * 3]
+    windows = ingest.merge_windows(points, pad_after=max(latencies) + 600, join_gap=3600)
+    clob = ClobApi.create(settings)
+    try:
+        fetched = await ingest.fetch_price_windows(db, clob, windows, concurrency=args.concurrency)
+    finally:
+        await clob.aclose()
+    series = {}
+    for token, ws in windows.items():
+        series[token] = db.prices(token, min(a for a, _ in ws) - 120, max(b for _, b in ws))
+    book = backtest.PriceBook(series)
+    print(f"price windows: {sum(len(w) for w in windows.values())} needed, {fetched} fetched now")
+
+    results = backtest.run_simulations(
+        db, meta, chosen, start=split, end=end, latencies=latencies, base=base, price_book=book
+    )
+    report = {
+        "params": {
+            "split": args.split,
+            "gap_days": args.gap_days,
+            "horizon_days": args.horizon_days,
+            "latencies": latencies,
+            "copy": base.__dict__,
+            "wallets_scored": len(scores),
+            "wallets_simulated": len(chosen),
+        },
+        "score_tiers": scoring.tier_summary(scores),
+        "summary": [ts.__dict__ for lat in latencies for ts in backtest.summarize(results, lat)],
+        "predictive": [backtest.predictive_check(results, lat) for lat in latencies],
+        "wallets": [scoring.score_row(s) | {"copy": r.as_dict()} for s, r in results],
+    }
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.out).write_text(json.dumps(report, indent=1, default=str))
+    print(
+        f"{'tier':<12} {'lat':>4} {'wal':>4} {'fill':>5} {'cost$':>9} {'pnl$':>9} {'roi':>7} {'lead_roi':>8}"
+        f" {'eff':>6} {'%prof':>6} {'prem¢':>6}"
+    )
+    for row in report["summary"]:
+        eff = row["copy_efficiency"]
+        prof = row["share_wallets_profitable"]
+        print(
+            f"{row['tier']:<12} {row['latency_s']:>4} {row['wallets']:>4} {row['filled']:>5} {row['cost']:>9.0f}"
+            f" {row['pnl']:>9.0f} {row['roi']:>7.3f} {row['leader_roi']:>8.3f}"
+            f" {eff if eff is None else round(eff, 2)!s:>6} {prof if prof is None else round(prof, 2)!s:>6}"
+            f" {row['mean_premium'] * 100:>6.2f}"
+        )
+    for p in report["predictive"]:
+        print(f"predictive (latency {p['latency_s']}s): {p}")
+    print(f"written: {args.out}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sniper", description=__doc__)
     p.add_argument("--db", help="SQLite path (default: $SNIPER_DB_PATH or data/sniper.sqlite)")
@@ -152,6 +223,24 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out", default="reports/scores.csv", help=".csv or .json")
     s.add_argument("--top", type=int, default=25, help="rows to print")
     s.set_defaults(func=cmd_score)
+
+    t = sub.add_parser("backtest", help="walk-forward: score before --split, simulate copying after it")
+    t.add_argument("--snapshot")
+    t.add_argument("--wallets")
+    t.add_argument("--split", required=True, help="ISO date: scoring uses data before split - gap")
+    t.add_argument("--gap-days", type=float, default=7.0)
+    t.add_argument("--horizon-days", type=float, default=45.0)
+    t.add_argument("--latencies", default="10,60,300,900", help="follower delays in seconds")
+    t.add_argument("--stake", type=float, default=100.0, help="USDC per copied signal")
+    t.add_argument("--half-spread", type=float, default=0.01)
+    t.add_argument("--max-premium", type=float, default=0.015, help="skip if price moved more than this vs leader")
+    t.add_argument("--max-signals", type=int, default=300, help="per wallet")
+    t.add_argument("--sample-noise", type=int, default=150, help="noise/insufficient wallets simulated per tier")
+    t.add_argument("--sample-excluded", type=int, default=150)
+    t.add_argument("--seed", type=int, default=0)
+    t.add_argument("--concurrency", type=int, default=8)
+    t.add_argument("--out", default="reports/backtest.json")
+    t.set_defaults(func=cmd_backtest)
     return p
 
 

@@ -49,3 +49,15 @@
   empirical Bayes с учётом неопределённости μ; cash-flow PnL по рынкам, разрешённым до среза; признаки архетипов.
 - `scoring.py`: флаги hft_bot / short_crypto / mm_or_arb / near_certainty_grinder / concentrated / thin_sample;
   тиры candidate / watch / noise / insufficient / excluded. CLI: `universe`, `backfill`, `enrich`, `score`.
+
+## 2026-11-06 — фаза 1: бэктест копирования и walk-forward
+- `backtest.py`: симуляция копировщика. Для каждой BUY-сделки лидера в окне: цена CLOB через `latency_s` + полуспред,
+  комиссия тейкера C·rate·p(1−p) по категории рынка, пропуск при уходе цены больше `max_premium` от цены лидера,
+  пропуск экстремальных цен (<0.03, >0.97). Выходы пропорционально повторяют SELL и MERGE лидера, доля выхода считается
+  по его реальным холдингам за всю историю. Остаток держится до резолюции, нерезолвнутые позиции оцениваются по себестоимости.
+  Бенчмарк лидера — те же сигналы по его ценам без комиссий; `copy_efficiency` = PnL копировщика / PnL бенчмарка.
+- Walk-forward: скоринг по данным до `split − gap`, симуляция на `[split, split + horizon)`; в симуляцию идут все
+  candidate и watch плюс выборки noise, insufficient и excluded как контрольные группы. Spearman θ̃ против ROI копировщика.
+- CLOB `/prices-history?fidelity=1`: окно до 7 дней работает (168 ч → 10 054 точки с шагом 60 с), 30 дней даёт
+  HTTP 400 «interval is too long» → окна ограничены 3 днями.
+- CLI: `sniper backtest --split ... --latencies 10,60,300,900`.

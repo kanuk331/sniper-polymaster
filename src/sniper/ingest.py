@@ -133,8 +133,13 @@ async def enrich(db: Database, data_api: DataApi, gamma: GammaApi) -> tuple[int,
     return n_tokens, n_markets
 
 
-def merge_windows(points: Iterable[tuple[str, int]], pad_after: int, join_gap: int) -> dict[str, list[tuple[int, int]]]:
-    """Group (token, ts) needs into per-token windows [ts, ts + pad_after], joining windows closer than join_gap."""
+def merge_windows(
+    points: Iterable[tuple[str, int]], pad_after: int, join_gap: int, max_len: int = 3 * 86400
+) -> dict[str, list[tuple[int, int]]]:
+    """Group (token, ts) needs into per-token windows [ts, ts + pad_after], joining windows closer than join_gap.
+
+    CLOB rejects fidelity=1 ranges longer than ~7 days ("interval is too long"), so windows are capped at max_len.
+    """
     by_token: dict[str, list[int]] = defaultdict(list)
     for token, ts in points:
         by_token[token].append(ts)
@@ -143,7 +148,7 @@ def merge_windows(points: Iterable[tuple[str, int]], pad_after: int, join_gap: i
         stamps.sort()
         windows: list[list[int]] = []
         for ts in stamps:
-            if windows and ts <= windows[-1][1] + join_gap:
+            if windows and ts <= windows[-1][1] + join_gap and ts + pad_after - windows[-1][0] <= max_len:
                 windows[-1][1] = max(windows[-1][1], ts + pad_after)
             else:
                 windows.append([ts, ts + pad_after])

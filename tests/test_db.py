@@ -99,3 +99,12 @@ def test_helpers():
     assert category_from_fee_type("crypto_fees_v2") == "crypto"
     assert parse_gamma_time("2026-07-01T00:00:00Z") == 1782864000
     assert parse_gamma_time("garbage") is None
+
+
+def test_merge_windows_joins_and_caps_length():
+    from sniper.ingest import merge_windows
+
+    w = merge_windows([("t", 0), ("t", 100), ("t", 10_000)], pad_after=50, join_gap=60)
+    assert w == {"t": [(0, 150), (10_000, 10_050)]}
+    capped = merge_windows([("t", i * 1000) for i in range(10)], pad_after=500, join_gap=600, max_len=3000)
+    assert all(b - a <= 3000 for a, b in capped["t"]) and len(capped["t"]) > 1

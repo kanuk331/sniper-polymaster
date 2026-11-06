@@ -75,3 +75,12 @@
   universe → 10 кошельков; backfill → 10 817 строк за 11 запросов; enrich → 2253 токена и 1855 рынков за ~30 с;
   score → 4 excluded (hft_bot 3, mm_or_arb 2, near_certainty_grinder 2, concentrated 1), 6 insufficient
   (у 6 кошельков нет бэкфилла).
+
+## 2026-11-06 — фаза 1, чекпоинт 3
+- `uv run pytest` → **36 passed** (добавлены test_backtest: PriceBook, спред + комиссия + выплата при резолюции,
+  пропуски premium / no_price / extreme_price, окно сигналов против истории для выходов, оценка открытых позиций
+  по себестоимости, лимит сигналов, spearman, summarize и выбор кошельков; test_db: merge_windows с лимитом длины).
+  `ruff check` → All checks passed.
+- Smoke `sniper backtest --split 2026-10-01 --gap-days 3 --horizon-days 20 --latencies 10,300` на /tmp/smoke.sqlite:
+  13 окон цен загружено; 1 excluded-кошелёк: 47–48 сделок, ROI копировщика 2.72 (10 с) и 2.74 (300 с) против 2.90
+  и 2.87 у бенчмарка лидера, efficiency 0.94–0.95. Выборка из одного кошелька — это проверка механики, а не результат.
