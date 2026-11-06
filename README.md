@@ -5,6 +5,7 @@ Polymarket Sniper ищет игроков с устойчивым преимущ
 
 **Статус:** фаза 1 (данные, скоринг, бэктест копирования). Только чтение публичных API: без ключей и без торговли.
 - Исследование и обоснование методики: [docs/research/2026-11-06-polymarket-sniper.md](docs/research/2026-11-06-polymarket-sniper.md)
+- Результаты фазы 1 (walk-forward копирования): [docs/research/2026-11-06-phase1-walkforward.md](docs/research/2026-11-06-phase1-walkforward.md)
 - Текущее состояние и следующие шаги: [docs/handoff](docs/handoff)
 
 ## Установка

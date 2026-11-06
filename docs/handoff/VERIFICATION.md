@@ -101,3 +101,12 @@
 ## 2026-11-06 — агрегация ордеров
 - `uv run pytest` → **39 passed**; `ruff check` → All checks passed.
 - Результаты v2 (`reports/wf-2026-09-v2.json`) заменяются v3: v2 завышен из-за копирования отдельных филлов.
+
+## 2026-11-06 — итоговый walk-forward v3
+- `uv run sniper backtest --snapshot wf-2026-09 --split 2026-09-01 --gap-days 7 --horizon-days 45
+  --latencies 10,60,300,900 --sample-noise 150 --sample-excluded 150` → exit 0, 30 857 окон цен (все из кэша),
+  427 кошельков. Таблица и разбор — в `docs/research/2026-11-06-phase1-walkforward.md`; цифры в отчёте сверены
+  с `reports/wf-2026-09-v3.json` (ROI по тирам и задержкам, candidate без makeit99, доли пропусков, Spearman).
+- Не проверено: исполнимость по реальному стакану (истории стакана нет), устойчивость на других срезах,
+  доверительные интервалы.
+- `uv run pytest` → 39 passed; `ruff check` → All checks passed.
