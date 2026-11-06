@@ -35,3 +35,17 @@
 - Каркас проекта (uv, Python ≥3.11, `src/sniper`): `config`, `http` (token bucket по маршрутам, ретраи 429/5xx
   с Retry-After, cursor-пагинация), `polymarket` (DataApi, GammaApi, ClobApi), `db` (SQLite: wallets, universe, activity,
   sync_state, tokens, markets, prices, price_windows). Тесты: `tests/test_http.py`, `tests/test_db.py`.
+
+## 2026-11-06 — фаза 1: ingest, аналитика, скоринг
+- `ingest.py`: вселенная из лидербордов (смещена в пользу победителей, годится для live-watchlist) и из рынков,
+  закрытых в заданном окне (без отбора по результату, для бэктестов); инкрементальный бэкфилл `/v2/activity`
+  (все типы событий, включая maker-сделки); обогащение через `/v2/tokens` и Gamma (резолюция, событие, neg-risk,
+  категория, комиссия); загрузка минутных окон цен CLOB.
+- Формат живых строк: TRADE.condition_id совпадает с tokens.condition_id; MERGE и REDEEM привязаны к condition;
+  CONVERSION привязан к neg_risk_market_id (его PnL не атрибутируется, такие кошельки флагуются как арбитраж).
+- `analytics.py`: ставка = рынок (доминирующий исход, средняя цена входа = π); Z-тест превышения над ценой входа
+  с кластеризацией по событиям (в neg-risk-событиях исходы взаимоисключающие, для прочих событий берётся верхняя
+  граница с полной корреляцией); θ̂ по logit-offset MLE с поправкой SE на design effect; BH/BY q-values;
+  empirical Bayes с учётом неопределённости μ; cash-flow PnL по рынкам, разрешённым до среза; признаки архетипов.
+- `scoring.py`: флаги hft_bot / short_crypto / mm_or_arb / near_certainty_grinder / concentrated / thin_sample;
+  тиры candidate / watch / noise / insufficient / excluded. CLI: `universe`, `backfill`, `enrich`, `score`.

@@ -16,3 +16,6 @@ node_modules/
 *.db
 data/
 logs/
+
+# Generated reports (may be large); curated results go to docs/research
+reports/
