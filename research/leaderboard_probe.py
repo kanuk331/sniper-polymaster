@@ -50,7 +50,8 @@ def delta(points: list[dict], field: str) -> float:
 
 def profile(entry: dict, window_start: int) -> dict:
     wallet = entry["user_id"]
-    trades = get("/trades", user=wallet, limit=1000)["data"]
+    # /v2/trades defaults to taker_only=true, which hides maker fills (market makers).
+    trades = get("/trades", user=wallet, limit=1000, taker_only="false")["data"]
     positions, truncated = [], False
     for status in POSITION_STATUSES:
         page = get("/positions", user=wallet, status=status, start=window_start, sort_by="TOTAL_PNL", limit=1000)
