@@ -94,7 +94,7 @@ class RiskEngine:
         self.killed = False
         self.paused = False
 
-    # --- sizing and checks ------------------------------------------------------------------------------------
+    # --- sizing and checks --------------------------------------------------------------------------------------------
 
     def desired_stake(self, price: float, theta: float, fee_rate: float) -> float:
         if self.cfg.stake_mode == "kelly":
@@ -116,9 +116,9 @@ class RiskEngine:
             return "paused"
         if self.killed:
             return "risk_kill_switch"
-        if self.realized_by_day.get(day_index(ts), 0.0) <= -self.cfg.daily_loss_stop * self.cfg.bankroll:
+        if self.realized_by_day.get(day_index(ts), 0.0) <= -self.cfg.daily_loss_stop * self.cfg.bankroll + 1e-6:
             return "risk_daily_stop"
-        if self.realized_by_week.get(week_index(ts), 0.0) <= -self.cfg.weekly_loss_stop * self.cfg.bankroll:
+        if self.realized_by_week.get(week_index(ts), 0.0) <= -self.cfg.weekly_loss_stop * self.cfg.bankroll + 1e-6:
             return "risk_weekly_stop"
         return None
 
@@ -137,7 +137,7 @@ class RiskEngine:
             return RiskDecision(0.0, f"risk_{binding}_limit", self.usage(exp))
         return RiskDecision(approved, None, self.usage(exp, approved))
 
-    # --- state updates ------------------------------------------------------------------------------------------
+    # --- state updates ------------------------------------------------------------------------------------------------
 
     def open(self, exp: Exposure, cost: float) -> None:
         for d in DIMENSIONS:

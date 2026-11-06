@@ -182,8 +182,12 @@ class BookSnapshot:
         return self.req_end_ms / 1000
 
 
-async def fetch_book(client: ApiClient, token_id: str, *, clock: Callable[[], float] = time.time) -> BookSnapshot:
-    """GET /book with request timing; failures (404 for closed markets, timeouts) become `error`."""
+async def fetch_book(clob: Any, token_id: str, *, clock: Callable[[], float] = time.time) -> BookSnapshot:
+    """GET /book with request timing; failures (404 for closed markets, timeouts) become `error`.
+
+    `clob` is an ApiClient or anything wrapping one as `.client` (e.g. polymarket.ClobApi).
+    """
+    client: ApiClient = getattr(clob, "client", clob)
     start = clock()
     book: OrderBook | None = None
     error: str | None = None
