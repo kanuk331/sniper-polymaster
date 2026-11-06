@@ -154,7 +154,7 @@ class RtdsClient:
         url: str = RTDS_URL,
         *,
         ping_interval_s: float = 5.0,
-        idle_timeout_s: float = 30.0,
+        idle_timeout_s: float = 15.0,  # the healthy global feed carries ~35 messages/s
         backoff_base_s: float = 1.0,
         backoff_max_s: float = 60.0,
         connect: Callable[[str], Any] | None = None,

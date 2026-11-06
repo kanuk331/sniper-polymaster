@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sniper.live.rtds import TradeEvent
 
@@ -36,6 +36,9 @@ class LeaderOrder:
     first_received: float = 0.0  # local time the first fill arrived
     feed_ts_ms: int | None = None
     detected_at: float = 0.0  # local time the aggregated order was emitted
+    # Set by PositionGate on position-entry signals: the leader's average entry and open cost for the position.
+    ref_vwap: float | None = None
+    position_notional: float | None = None
 
     @classmethod
     def from_event(cls, ev: TradeEvent) -> LeaderOrder:
@@ -80,6 +83,11 @@ class LeaderOrder:
     @property
     def vwap(self) -> float:
         return self.notional / self.size if self.size else 0.0
+
+    @property
+    def entry_price(self) -> float:
+        """Price the copy rules compare against: the position's average entry for gated signals, else the VWAP."""
+        return self.ref_vwap if self.ref_vwap is not None else self.vwap
 
     @property
     def is_taker(self) -> bool:
@@ -149,3 +157,38 @@ class OrderAggregator:
             order.detected_at = now
         self.orders_emitted += len(out)
         return out
+
+
+class PositionGate:
+    """Leader orders -> position-entry signals (the backtest's primary strategy "position").
+
+    A BUY becomes a signal only when the leader's open cost in that token first reaches `min_notional`; adds after
+    that are tracked but not copied. Positions already held when the gate was seeded count as signaled (their entry
+    was not observed). Sells shrink the tracked position and reset it once it is closed.
+    """
+
+    def __init__(self, min_notional: float = 100.0):
+        self.min_notional = min_notional
+        self._pos: dict[tuple[str, str], list] = {}  # (wallet, token) -> [cost, shares, signaled]
+
+    def seed(self, wallet: str, token_id: str) -> None:
+        self._pos[(wallet, token_id)] = [0.0, 0.0, True]
+
+    def observe(self, order: LeaderOrder) -> LeaderOrder | None:
+        """For a BUY return the signal to copy (or None to only track it); SELLs are returned unchanged."""
+        key = (order.wallet, order.token_id)
+        st = self._pos.setdefault(key, [0.0, 0.0, False])
+        if order.side == "BUY":
+            st[0] += order.notional
+            st[1] += order.size
+            if st[2] or st[0] < self.min_notional:
+                return None
+            st[2] = True
+            return replace(order, ref_vwap=st[0] / st[1], position_notional=st[0])
+        if st[1] > 0:
+            frac = min(1.0, order.size / st[1])
+            st[0] *= 1 - frac
+            st[1] *= 1 - frac
+            if st[1] <= 1e-6:
+                del self._pos[key]
+        return order

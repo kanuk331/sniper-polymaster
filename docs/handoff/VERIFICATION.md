@@ -126,3 +126,11 @@
 - Регрессия: `research/latency_discrepancy.py` воспроизвёл PnL фазы 1 у .ethguy, makeit99, willsom, tragz до цента;
   у arm1337 старый код на новых окнах цен даёт 1 629.60 / −409.01, то есть столько же, сколько новый (`/tmp/cmp_old.py`).
 - Цифры пункта 1 взяты из `reports/latency_discrepancy.json` (бутстрэп 2000 повторов).
+
+## 2026-11-06 — итерация 2, чекпоинт 3
+- `uv run pytest` → **132 passed** (из них 72 теста фазы 2: парсинг RTDS, агрегация, стакан и VWAP, риск, paper-движок,
+  Telegram через MockTransport, отчёт, runner на фейках; плюс мой `test_position_gate_signals_once_per_position`
+  и `test_add_prices_many`). `ruff check` → чисто.
+- В runner-тесте агента явно задан `signal_mode="order"`: тест проверяет путь «каждый ордер», а по умолчанию теперь `position`.
+- `sniper live run --help` показывает `--signal-mode {position,order}` и `--min-leader-notional`.
+- Не проверено: реальная отправка в Telegram (нет токена); выходы по продажам и merge в live — только unit-тесты.

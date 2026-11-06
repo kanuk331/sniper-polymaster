@@ -7,11 +7,11 @@ Telegram-алерты + paper trading со снимками стакана; (6) 
 Live-торговля не реализуется.
 
 - [x] План периодов с ролями dev/holdout (`config/walkforward.toml`), временная модель комиссий, coverage-бэкфилл
-- [~] Сбор данных по 9 периодам (фон, /tmp/wf_collect.log)
+- [~] Сбор данных по 9 периодам (фон, /tmp/collect_v2.log): p2026-09 готов, p2026-05 идёт
 - [x] (1) Разбор разницы между задержками 10 и 60 с → артефакт (`docs/research/2026-11-06-latency-discrepancy.md`)
 - [x] Метрики (7) и разбивки (6): `metrics.py`, `wf report`
 - [x] (3) Фильтр быстрых сделок (`copyability.py`), пороги в предрегистрации
 - [x] Предрегистрация правил решения
 - [ ] Оценка dev → заморозка → holdout
-- [~] (5) Фаза 2: RTDS → снимки стакана → paper trading → Telegram (делегировано агенту)
-Тесты: 57 passed; ruff чисто.
+- [x] (5) Фаза 2: `sniper live run|report` (RTDS → снимки стакана 0/10/60/300 с → paper → Telegram/dry-run); основная стратегия position
+Тесты: 132 passed; ruff чисто. Telegram проверен только на моках (токена в окружении нет).
