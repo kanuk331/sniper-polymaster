@@ -10,7 +10,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sniper import backtest, ingest, scoring
+from sniper import backtest, ingest, plan, scoring, walkforward
 from sniper.config import Settings
 from sniper.db import Database
 from sniper.polymarket import ClobApi, DataApi, GammaApi
@@ -185,6 +185,18 @@ async def cmd_backtest(args: argparse.Namespace, settings: Settings, db: Databas
     print(f"written: {args.out}")
 
 
+async def cmd_wf_collect(args: argparse.Namespace, settings: Settings, db: Database) -> None:
+    periods = plan.select(plan.load_plan(args.plan), role=args.role, names=_csv(args.periods) if args.periods else None)
+    data_api, gamma = DataApi.create(settings), GammaApi.create(settings)
+    try:
+        for period in periods:
+            summary = await walkforward.collect(db, period, data_api, gamma, Path(args.out))
+            print(json.dumps(summary))
+    finally:
+        await data_api.aclose()
+        await gamma.aclose()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sniper", description=__doc__)
     p.add_argument("--db", help="SQLite path (default: $SNIPER_DB_PATH or data/sniper.sqlite)")
@@ -241,6 +253,15 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--concurrency", type=int, default=8)
     t.add_argument("--out", default="reports/backtest.json")
     t.set_defaults(func=cmd_backtest)
+
+    wf = sub.add_parser("wf", help="multi-period walk-forward (config/walkforward.toml)")
+    wf_sub = wf.add_subparsers(dest="wf_command", required=True)
+    wc = wf_sub.add_parser("collect", help="universe + windowed backfill + enrichment for plan periods")
+    wc.add_argument("--plan", default="config/walkforward.toml")
+    wc.add_argument("--role", choices=["dev", "holdout", "all"], default="all")
+    wc.add_argument("--periods", help="comma-separated period names (default: all with the role)")
+    wc.add_argument("--out", default="reports/walkforward")
+    wc.set_defaults(func=cmd_wf_collect)
     return p
 
 

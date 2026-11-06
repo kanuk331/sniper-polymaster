@@ -61,6 +61,21 @@ CREATE TABLE IF NOT EXISTS sync_state (
     truncated INTEGER NOT NULL DEFAULT 0
 );
 
+-- Activity intervals known to be complete per wallet, and windows where the per-window row cap was hit.
+CREATE TABLE IF NOT EXISTS coverage (
+    wallet   TEXT NOT NULL,
+    start_ts INTEGER NOT NULL,
+    end_ts   INTEGER NOT NULL,
+    PRIMARY KEY (wallet, start_ts)
+);
+CREATE TABLE IF NOT EXISTS capped (
+    wallet   TEXT NOT NULL,
+    start_ts INTEGER NOT NULL,
+    end_ts   INTEGER NOT NULL,
+    low_ts   INTEGER NOT NULL,
+    PRIMARY KEY (wallet, start_ts, end_ts)
+);
+
 CREATE TABLE IF NOT EXISTS tokens (
     token_id           TEXT PRIMARY KEY,
     condition_id       TEXT NOT NULL,
@@ -119,8 +134,39 @@ def _now() -> int:
     return int(time.time())
 
 
-def activity_record(wallet: str, row: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a /v2/activity (or /v2/trades) row into the activity table shape."""
+def merge_intervals(intervals: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    out: list[list[int]] = []
+    for a, b in sorted(intervals):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def subtract_intervals(window: tuple[int, int], covered: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Parts of `window` not covered by `covered`."""
+    start, end = window
+    gaps = []
+    cursor = start
+    for a, b in merge_intervals(covered):
+        if b <= cursor or a >= end:
+            continue
+        if a > cursor:
+            gaps.append((cursor, a))
+        cursor = max(cursor, b)
+        if cursor >= end:
+            break
+    if cursor < end:
+        gaps.append((cursor, end))
+    return gaps
+
+
+def activity_record(wallet: str, row: dict[str, Any], *, slim: bool = False) -> dict[str, Any]:
+    """Normalize a /v2/activity (or /v2/trades) row into the activity table shape.
+
+    slim=True drops display-only text (title, event slug), which is most of the row size; token metadata covers it.
+    """
     size = float(row.get("size") or 0)
     price = float(row.get("price") or 0)
     usdc = row.get("usdc_size")
@@ -137,8 +183,8 @@ def activity_record(wallet: str, row: dict[str, Any]) -> dict[str, Any]:
         "usdc_size": float(usdc) if usdc is not None else price * size,
         "tx_hash": row.get("transaction_hash") or "",
         "slug": row.get("slug"),
-        "event_slug": row.get("event_slug"),
-        "title": row.get("title"),
+        "event_slug": None if slim else row.get("event_slug"),
+        "title": None if slim else row.get("title"),
     }
 
 
@@ -248,6 +294,74 @@ class Database:
 
     def wallets_with_activity(self) -> list[str]:
         return [r[0] for r in self.conn.execute("SELECT DISTINCT wallet FROM activity ORDER BY wallet")]
+
+    def activity_count(self, wallet: str, start: int | None = None, end: int | None = None) -> int:
+        q, args = "SELECT COUNT(*) FROM activity WHERE wallet = ?", [wallet.lower()]
+        if start is not None:
+            q += " AND ts >= ?"
+            args.append(start)
+        if end is not None:
+            q += " AND ts < ?"
+            args.append(end)
+        return int(self.conn.execute(q, args).fetchone()[0])
+
+    # --- coverage ---------------------------------------------------------------------------------------------------
+
+    def coverage(self, wallet: str) -> list[tuple[int, int]]:
+        rows = self.conn.execute(
+            "SELECT start_ts, end_ts FROM coverage WHERE wallet = ? ORDER BY start_ts", (wallet.lower(),)
+        )
+        return [(r[0], r[1]) for r in rows]
+
+    def add_coverage(self, wallet: str, start: int, end: int) -> None:
+        w = wallet.lower()
+        merged = merge_intervals([*self.coverage(w), (start, end)])
+        with self.tx() as c:
+            c.execute("DELETE FROM coverage WHERE wallet = ?", (w,))
+            c.executemany(
+                "INSERT INTO coverage(wallet, start_ts, end_ts) VALUES (?, ?, ?)", [(w, a, b) for a, b in merged]
+            )
+
+    def missing_intervals(self, wallet: str, start: int, end: int) -> list[tuple[int, int]]:
+        return subtract_intervals((start, end), self.coverage(wallet))
+
+    def add_capped(self, wallet: str, start: int, end: int, low_ts: int) -> None:
+        with self.tx() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO capped(wallet, start_ts, end_ts, low_ts) VALUES (?, ?, ?, ?)",
+                (wallet.lower(), start, end, low_ts),
+            )
+
+    def window_status(self, wallet: str, start: int, end: int) -> str:
+        """'complete' if activity in [start, end) is fully stored, 'capped' if the row cap was hit, else 'missing'."""
+        if not self.missing_intervals(wallet, start, end):
+            return "complete"
+        hit = self.conn.execute(
+            "SELECT 1 FROM capped WHERE wallet = ? AND start_ts < ? AND end_ts > ? LIMIT 1",
+            (wallet.lower(), end, start),
+        ).fetchone()
+        return "capped" if hit else "missing"
+
+    def migrate_sync_state(self, since: int) -> int:
+        """One-off: turn phase-1 sync_state rows (backfilled from `since`) into coverage intervals.
+
+        Truncated wallets are complete only from their earliest stored row (the API returns newest first).
+        """
+        rows = self.conn.execute(
+            "SELECT s.wallet, s.synced_at, s.truncated FROM sync_state s "
+            "WHERE NOT EXISTS (SELECT 1 FROM coverage c WHERE c.wallet = s.wallet)"
+        ).fetchall()
+        n = 0
+        for r in rows:
+            start = since
+            if r["truncated"]:
+                low = self.conn.execute("SELECT MIN(ts) FROM activity WHERE wallet = ?", (r["wallet"],)).fetchone()[0]
+                if low is None:
+                    continue
+                start = low
+            self.add_coverage(r["wallet"], start, r["synced_at"])
+            n += 1
+        return n
 
     def sync_state(self, wallet: str) -> SyncState | None:
         r = self.conn.execute("SELECT * FROM sync_state WHERE wallet = ?", (wallet.lower(),)).fetchone()

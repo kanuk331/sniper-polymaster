@@ -1,0 +1,74 @@
+# Walk-forward plan for research iteration 2. Fixed on 2026-11-06, before any new period was evaluated.
+#
+# Roles
+#   dev      may be inspected repeatedly to investigate and design filters.
+#   holdout  evaluated exactly once, after code and thresholds are frozen: `sniper wf evaluate --role holdout`
+#            refuses to run on a dirty working tree and records the commit hash in its output.
+# Assignment rule: periods in chronological order alternate dev / holdout starting with dev. p2026-09 was already
+# inspected in phase 1, and the rule makes it dev.
+#
+# Evaluation windows [split, split + horizon) do not overlap, so outcomes are independent across periods. Training
+# windows overlap, which is fine: selection only uses data before split - gap.
+
+[defaults]
+lookback_days = 180
+gap_days = 7
+horizon_days = 45
+universe_markets = 100     # top markets by volume whose end date falls inside the lookback window
+trades_per_market = 3000
+min_notional = 5000        # USDC a wallet traded in those markets to enter the universe
+activity_cap = 15000       # activity rows per wallet per window; wallets above it are flagged activity_cap
+
+[[period]]
+name = "p2024-10"
+split = "2024-10-15"
+role = "dev"
+conditions = "US presidential election (Nov 5) inside evaluation; no taker fees; CLOB v1"
+
+[[period]]
+name = "p2025-02"
+split = "2025-02-01"
+role = "holdout"
+conditions = "post-election; no taker fees; CLOB v1"
+
+[[period]]
+name = "p2025-05"
+split = "2025-05-01"
+role = "dev"
+conditions = "no taker fees; CLOB v1"
+
+[[period]]
+name = "p2025-08"
+split = "2025-08-01"
+role = "holdout"
+conditions = "no taker fees; CLOB v1"
+
+[[period]]
+name = "p2025-11"
+split = "2025-11-01"
+role = "dev"
+conditions = "no taker fees; CLOB v1"
+
+[[period]]
+name = "p2026-02"
+split = "2026-02-01"
+role = "holdout"
+conditions = "fee rollout: 15m/5m crypto (Jan 5 / Feb 12), NCAAB + Serie A (Feb 18), new crypto markets (Mar 6); CLOB v1"
+
+[[period]]
+name = "p2026-05"
+split = "2026-05-01"
+role = "dev"
+conditions = "Fee Structure V2 (since Mar 30); CLOB V2 + pUSD (since Apr 28)"
+
+[[period]]
+name = "p2026-07"
+split = "2026-07-01"
+role = "holdout"
+conditions = "sports taker fee 0.03 -> 0.05 (Jul 10); CLOB V2"
+
+[[period]]
+name = "p2026-09"
+split = "2026-09-01"
+role = "dev"
+conditions = "full fee regime; CLOB V2; phase-1 period (already inspected)"

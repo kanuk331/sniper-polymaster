@@ -96,8 +96,54 @@ async def backfill_wallet(db: Database, api: DataApi, wallet: str, *, since: int
     inserted = db.upsert_activity(records)
     last_ts = max((r["ts"] for r in records), default=state.last_ts if state else None)
     truncated = len(records) >= max_items or bool(state and state.truncated)
-    db.set_sync_state(wallet, last_ts, len(db.activity(wallet)), truncated)
+    db.set_sync_state(wallet, last_ts, db.activity_count(wallet), truncated)
     return inserted
+
+
+async def backfill_window(
+    db: Database, api: DataApi, wallet: str, start: int, end: int, *, cap: int
+) -> tuple[int, str]:
+    """Make activity in [start, end) complete for a wallet, fetching only uncovered sub-intervals.
+
+    The API returns newest rows first; if a sub-interval hits `cap` rows, only [oldest fetched, end) is complete and
+    the window is recorded as capped (such wallets are too active to copy and are flagged activity_cap).
+    """
+    inserted = 0
+    for a, b in reversed(db.missing_intervals(wallet, start, end)):
+        records = [
+            activity_record(wallet, row, slim=True) async for row in api.activity(wallet, start=a, end=b, max_items=cap)
+        ]
+        inserted += db.upsert_activity(records)
+        if len(records) >= cap:
+            low = min(r["ts"] for r in records)
+            db.add_coverage(wallet, low + 1, b)
+            db.add_capped(wallet, start, end, low)
+            return inserted, "capped"
+        db.add_coverage(wallet, a, b)
+    return inserted, "complete"
+
+
+async def backfill_windows(
+    db: Database, api: DataApi, wallets: list[str], start: int, end: int, *, cap: int, concurrency: int = 6
+) -> dict[str, str]:
+    sem = asyncio.Semaphore(concurrency)
+    status: dict[str, str] = {}
+    done = 0
+
+    async def one(wallet: str) -> None:
+        nonlocal done
+        async with sem:
+            try:
+                _, status[wallet] = await backfill_window(db, api, wallet, start, end, cap=cap)
+            except Exception as exc:  # one bad wallet must not abort a long backfill
+                log.warning("backfill %s failed: %s", wallet, exc)
+                status[wallet] = "error"
+            done += 1
+            if done % 50 == 0 or done == len(wallets):
+                log.info("backfill %d/%d", done, len(wallets))
+
+    await asyncio.gather(*(one(w) for w in wallets))
+    return status
 
 
 async def backfill(
