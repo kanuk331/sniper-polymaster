@@ -108,3 +108,9 @@ def test_merge_windows_joins_and_caps_length():
     assert w == {"t": [(0, 150), (10_000, 10_050)]}
     capped = merge_windows([("t", i * 1000) for i in range(10)], pad_after=500, join_gap=600, max_len=3000)
     assert all(b - a <= 3000 for a, b in capped["t"]) and len(capped["t"]) > 1
+
+
+def test_add_prices_many():
+    db = Database(":memory:")
+    db.add_prices_many([("a", 0, 100, [(10, 0.5)]), ("b", 0, 100, [(20, 0.6), (30, 0.7)])])
+    assert db.prices("b", 0, 100) == [(20, 0.6), (30, 0.7)] and db.has_price_window("a", 0, 100)

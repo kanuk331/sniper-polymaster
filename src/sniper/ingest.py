@@ -213,12 +213,27 @@ def merge_windows(
 
 
 async def fetch_price_windows(
-    db: Database, clob: ClobApi, windows: dict[str, list[tuple[int, int]]], *, concurrency: int = 8
+    db: Database,
+    clob: ClobApi,
+    windows: dict[str, list[tuple[int, int]]],
+    *,
+    concurrency: int = 32,
+    batch: int = 100,
 ) -> int:
-    """Fetch ~1-minute CLOB price history for each window not already cached. Returns windows fetched."""
+    """Fetch ~1-minute CLOB price history for each window not already cached. Returns windows fetched.
+
+    Writes are batched: one transaction per window serialises on the SQLite write lock when another process
+    (a backfill) is writing to the same file, and that, not the API, becomes the bottleneck.
+    """
     todo = [(t, a, b) for t, ws in windows.items() for a, b in ws if not db.has_price_window(t, a, b)]
     sem = asyncio.Semaphore(concurrency)
+    pending: list[tuple[str, int, int, list[tuple[int, float]]]] = []
     fetched = 0
+
+    def flush() -> None:
+        if pending:
+            db.add_prices_many(pending)
+            pending.clear()
 
     async def one(token: str, start: int, end: int) -> None:
         nonlocal fetched
@@ -228,10 +243,13 @@ async def fetch_price_windows(
             except Exception as exc:
                 log.warning("prices %s [%d,%d] failed: %s", token[:12], start, end, exc)
                 return
-            db.add_prices(token, start, end, points)
+            pending.append((token, start, end, points))
             fetched += 1
-            if fetched % 200 == 0:
+            if len(pending) >= batch:
+                flush()
+            if fetched % 2000 == 0:
                 log.info("price windows %d/%d", fetched, len(todo))
 
     await asyncio.gather(*(one(*w) for w in todo))
+    flush()
     return fetched

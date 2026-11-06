@@ -219,7 +219,8 @@ class Database:
         self.path = Path(path)
         if str(path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(path))
+        # Long busy timeout: collection and evaluation may write to the same file concurrently.
+        self.conn = sqlite3.connect(str(path), timeout=120)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -427,9 +428,12 @@ class Database:
         return {r["token_id"]: r for r in rows}
 
     def _temp_keys(self, name: str, keys: Iterable[str]) -> None:
-        self.conn.execute(f"CREATE TEMP TABLE IF NOT EXISTS {name} (key TEXT PRIMARY KEY)")
-        self.conn.execute(f"DELETE FROM {name}")
-        self.conn.executemany(f"INSERT OR IGNORE INTO {name}(key) VALUES (?)", [(k,) for k in keys])
+        # Commit right away: an implicit transaction left open here pins an old WAL snapshot, and the next write
+        # then fails immediately with "database is locked" once another process has written.
+        with self.tx() as c:
+            c.execute(f"CREATE TEMP TABLE IF NOT EXISTS {name} (key TEXT PRIMARY KEY)")
+            c.execute(f"DELETE FROM {name}")
+            c.executemany(f"INSERT OR IGNORE INTO {name}(key) VALUES (?)", [(k,) for k in keys])
 
     def condition_ids_for(self, wallets: Iterable[str], start: int, end: int) -> set[str]:
         """Conditions these wallets touched in [start, end): via traded/redeemed tokens and merge/split rows."""
@@ -508,6 +512,18 @@ class Database:
                 "INSERT OR IGNORE INTO price_windows(token_id, start_ts, end_ts) VALUES (?, ?, ?)",
                 (token_id, start, end),
             )
+
+    def add_prices_many(self, items: Iterable[tuple[str, int, int, Iterable[tuple[int, float]]]]) -> None:
+        with self.tx() as c:
+            for token_id, start, end, points in items:
+                c.executemany(
+                    "INSERT OR REPLACE INTO prices(token_id, ts, price) VALUES (?, ?, ?)",
+                    [(token_id, ts, p) for ts, p in points],
+                )
+                c.execute(
+                    "INSERT OR IGNORE INTO price_windows(token_id, start_ts, end_ts) VALUES (?, ?, ?)",
+                    (token_id, start, end),
+                )
 
     def prices(self, token_id: str, start: int, end: int) -> list[tuple[int, float]]:
         rows = self.conn.execute(
