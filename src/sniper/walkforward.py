@@ -424,7 +424,14 @@ METRIC_COLS = [
 
 
 def report(
-    periods: Sequence[Period], out_root: Path, *, label: str, primary: str, decision_latency: int, n_boot: int = 1000
+    periods: Sequence[Period],
+    out_root: Path,
+    *,
+    label: str,
+    primary: str,
+    decision_latency: int,
+    n_boot: int = 1000,
+    alpha: float = 0.025,
 ) -> dict[str, Any]:
     loaded = []
     for p in periods:
@@ -475,16 +482,43 @@ def report(
                         "per_period": per} | s)  # fmt: skip
     traders.sort(key=lambda r: (-r["periods_as_lead"], -(r["roi_ci95"] or (-9, -9))[0]))
 
-    cand = [x for x in lots if x.strategy == primary and x.tier == "candidate" and x.latency_s == decision_latency]
-    noise = [x for x in lots if x.strategy == primary and x.tier == "noise" and x.latency_s == decision_latency]
+    def pool(tiers: tuple[str, ...]) -> list[Lot]:
+        return [x for x in lots if x.strategy == primary and x.tier in tiers and x.latency_s == decision_latency]
+
+    cand, noise, eligible = pool(("candidate",)), pool(("noise",)), pool(("candidate", "watch", "noise"))
     cand_s = metrics.summarize(cand, n_boot=n_boot) if cand else None
     noise_s = metrics.summarize(noise, n_boot=n_boot) if noise else None
+    eligible_s = metrics.summarize(eligible, n_boot=n_boot) if eligible else None
     per_cand = [r for r in per_period if r["tier"] == "candidate"]
+
+    def confirm(group: list[Lot]) -> dict[str, Any] | None:
+        """One-sided test of ROI > 0 at level alpha: lower bound of the (1 - 2*alpha) cluster-bootstrap CI."""
+        if not group:
+            return None
+        ci = metrics.cluster_bootstrap_ratio(
+            [x.pnl for x in group if x.filled], [x.cost for x in group if x.filled],
+            [x.event_key for x in group if x.filled], n_boot=max(n_boot, 2000), alpha=2 * alpha,
+        )  # fmt: skip
+        return {"ci": ci, "level": 1 - 2 * alpha, "supported": bool(ci and ci[0] > 0)}
+
+    per_eligible = [
+        {"period": p.name} | metrics.summarize(
+            [x for x in ls if x.strategy == primary and x.tier in ("candidate", "watch", "noise")
+             and x.latency_s == decision_latency], n_boot=n_boot)
+        for p, _, ls in loaded
+    ]  # fmt: skip
     decision = {
         "primary_strategy": primary,
         "decision_latency_s": decision_latency,
+        "alpha_per_hypothesis": alpha,
         "candidate_pooled": cand_s,
         "noise_pooled": noise_s,
+        "eligible_pooled": eligible_s,
+        "h1_candidate": confirm(cand),
+        "h2_eligible": confirm(eligible),
+        "per_period_eligible": [
+            {k: r.get(k) for k in ("period", "signals", "filled", "roi", "roi_ci95", "wallets")} for r in per_eligible
+        ],
         "periods_with_candidates": len(per_cand),
         "periods_candidate_roi_positive": sum(r["roi"] > 0 for r in per_cand),
         "supported": bool(cand_s and cand_s["roi_ci95"] and cand_s["roi_ci95"][0] > 0),
