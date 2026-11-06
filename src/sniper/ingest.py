@@ -126,10 +126,20 @@ async def backfill(
 async def enrich(db: Database, data_api: DataApi, gamma: GammaApi) -> tuple[int, int]:
     """Resolve token metadata (outcome, resolution, event, neg-risk) and market fee schedules/categories."""
     token_ids = db.token_ids_needing_refresh()
+    log.info("enrich: %d tokens to refresh", len(token_ids))
     n_tokens = db.upsert_tokens(await data_api.tokens(token_ids)) if token_ids else 0
-    condition_ids = db.condition_ids_needing_market()
-    n_markets = db.upsert_markets(await gamma.markets_by_condition(condition_ids)) if condition_ids else 0
-    log.info("enrich: %d/%d tokens, %d/%d markets", n_tokens, len(token_ids), n_markets, len(condition_ids))
+    needed = db.condition_ids_needing_market()
+    log.info("enrich: %d markets to fetch", len(needed))
+    n_markets = 0
+    for closed in (True, False):
+        ids = [c for c, is_closed in needed.items() if is_closed == closed]
+        if ids:
+            n_markets += db.upsert_markets(await gamma.markets_by_condition(ids, closed=closed))
+    missing = set(needed) - set(db.markets())
+    if missing:
+        # Token and market closed flags can disagree briefly; retry the leftovers with both states.
+        n_markets += db.upsert_markets(await gamma.markets_by_condition(missing))
+    log.info("enrich: %d/%d tokens, %d/%d markets", n_tokens, len(token_ids), n_markets, len(needed))
     return n_tokens, n_markets
 
 

@@ -305,12 +305,14 @@ class Database:
     def tokens(self) -> dict[str, sqlite3.Row]:
         return {r["token_id"]: r for r in self.conn.execute("SELECT * FROM tokens")}
 
-    def condition_ids_needing_market(self) -> list[str]:
+    def condition_ids_needing_market(self) -> dict[str, bool]:
+        """Conditions without market metadata (or stored as open but now closed) -> token-level closed flag."""
         rows = self.conn.execute(
-            "SELECT DISTINCT t.condition_id FROM tokens t LEFT JOIN markets m ON m.condition_id = t.condition_id "
-            "WHERE t.condition_id LIKE '0x%' AND (m.condition_id IS NULL OR (m.closed = 0 AND t.closed = 1))"
+            "SELECT t.condition_id, MAX(t.closed) FROM tokens t LEFT JOIN markets m ON m.condition_id = t.condition_id "
+            "WHERE t.condition_id LIKE '0x%' AND (m.condition_id IS NULL OR (m.closed = 0 AND t.closed = 1)) "
+            "GROUP BY t.condition_id"
         )
-        return [r[0] for r in rows]
+        return {r[0]: bool(r[1]) for r in rows}
 
     def upsert_markets(self, rows: Iterable[dict[str, Any]]) -> int:
         now = _now()

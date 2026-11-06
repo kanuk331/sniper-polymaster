@@ -68,7 +68,7 @@ def test_tokens_markets_and_refresh_queries():
         ]
     )
     assert db.token_ids_needing_refresh() == []
-    assert db.condition_ids_needing_market() == ["0xc1"]
+    assert db.condition_ids_needing_market() == {"0xc1": True}
     db.upsert_markets(
         [
             {
@@ -83,7 +83,7 @@ def test_tokens_markets_and_refresh_queries():
     m = db.markets()["0xc1"]
     assert (m["category"], m["fee_rate"]) == ("sports", 0.05)
     assert m["closed_time"] == 1793974384
-    assert db.condition_ids_needing_market() == []
+    assert db.condition_ids_needing_market() == {}
 
 
 def test_price_windows():
