@@ -166,7 +166,9 @@ async def cmd_wf_collect(args: argparse.Namespace, settings: Settings, db: Datab
     data_api, gamma = DataApi.create(settings), GammaApi.create(settings)
     try:
         for period in periods:
-            summary = await walkforward.collect(db, period, data_api, gamma, Path(args.out))
+            summary = await walkforward.collect(
+                db, period, data_api, gamma, Path(args.out), concurrency=args.concurrency
+            )
             print(json.dumps(summary))
     finally:
         await data_api.aclose()
@@ -266,6 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
     wc.add_argument("--role", choices=["dev", "holdout", "all"], default="all")
     wc.add_argument("--periods", help="comma-separated period names (default: all with the role)")
     wc.add_argument("--out", default="reports/walkforward")
+    wc.add_argument("--concurrency", type=int, default=16, help="wallets backfilled in parallel (latency-bound)")
     wc.set_defaults(func=cmd_wf_collect)
 
     we = wf_sub.add_parser("evaluate", help="score before each split (incl. fast-trade filter), simulate after it")
