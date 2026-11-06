@@ -42,7 +42,19 @@ class Thresholds:
     q_candidate: float = 0.05
 
 
-HARD_FLAGS = ("hft_bot", "short_crypto", "mm_or_arb", "near_certainty_grinder", "concentrated")
+# Priority order: the first hard flag present is a wallet's primary exclusion reason (its `style`).
+HARD_FLAGS = (
+    "activity_cap",
+    "hft_bot",
+    "short_crypto",
+    "mm_or_arb",
+    "near_certainty_grinder",
+    "concentrated",
+    "fast_runaway",
+    "fast_roundtrip",
+    "uncopyable_edge",
+)
+SOFT_INSUFFICIENT = ("thin_sample", "copy_unverified")
 TIERS = ("candidate", "watch", "noise", "insufficient", "excluded")
 
 
@@ -80,13 +92,27 @@ class WalletScore:
     theta_post_sd: float = math.inf
     theta_q20: float = -math.inf
     tier: str = "noise"
+    style: str = ""
+    copyability: Any = None
     notes: list[str] = field(default_factory=list)
+
+
+def trader_style(s: WalletScore) -> str:
+    """Primary exclusion reason for excluded wallets, else the entry-price style of the trader."""
+    hard = [f for f in HARD_FLAGS if f in s.flags]
+    if hard:
+        return hard[0]
+    if s.features.median_entry <= 0.30:
+        return "longshot"
+    if s.features.median_entry >= 0.70:
+        return "favorite"
+    return "balanced"
 
 
 def assign_tier(s: WalletScore, t: Thresholds) -> str:
     if any(f in HARD_FLAGS for f in s.flags):
         return "excluded"
-    if "thin_sample" in s.flags:
+    if any(f in SOFT_INSUFFICIENT for f in s.flags):
         return "insufficient"
     if s.q_bh <= t.q_candidate and s.theta_q20 > 0:
         return "candidate"
@@ -126,8 +152,21 @@ def score_wallets(
         s.theta_q20 = sh.mean - Z_20 * sh.sd
     for s in scores:
         s.tier = assign_tier(s, t)
+        s.style = trader_style(s)
     scores.sort(key=lambda s: (TIERS.index(s.tier), -s.theta_q20 if math.isfinite(s.theta_q20) else math.inf))
     return scores
+
+
+def apply_flags(scores: list[WalletScore], extra: dict[str, list[str]], thresholds: Thresholds | None = None) -> None:
+    """Add flags computed elsewhere (e.g. the fast-trade filter) and recompute tiers and styles in place."""
+    t = thresholds or Thresholds()
+    for s in scores:
+        for flag in extra.get(s.wallet, []):
+            if flag not in s.flags:
+                s.flags.append(flag)
+        s.tier = assign_tier(s, t)
+        s.style = trader_style(s)
+    scores.sort(key=lambda s: (TIERS.index(s.tier), -s.theta_q20 if math.isfinite(s.theta_q20) else math.inf))
 
 
 # --- output ------------------------------------------------------------------------------------------------------
@@ -136,7 +175,7 @@ CSV_FIELDS = [
     "tier", "wallet", "user_name", "flags", "n_resolved", "n_events", "z", "p_value", "q_bh", "q_by", "theta",
     "theta_se", "theta_shrunk", "theta_q20", "hit_rate", "mean_pi", "resolved_pnl", "roi", "top_event_share",
     "pnl_ex_top3", "n_trades", "history_days", "trades_per_active_day", "two_sided_share", "income_share",
-    "high_price_buy_share", "median_entry", "top_category",
+    "high_price_buy_share", "median_entry", "top_category", "style",
 ]  # fmt: skip
 
 
@@ -172,6 +211,7 @@ def score_row(s: WalletScore) -> dict[str, Any]:
         "high_price_buy_share": round(f.high_price_buy_share, 3),
         "median_entry": round(f.median_entry, 3),
         "top_category": top_category,
+        "style": s.style,
     }
 
 

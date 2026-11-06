@@ -3,28 +3,33 @@ import pytest
 from sniper.analytics import MarketMeta, Meta, TokenMeta
 from sniper.backtest import (
     CopyParams,
+    LotLabels,
     PriceBook,
+    aggregate_orders,
     choose_wallets_to_simulate,
+    predictive_check,
     simulate_copy,
     spearman,
-    summarize,
-    taker_fee,
 )
+from sniper.fees import FEE_V2_START, taker_fee
+from sniper.metrics import summarize
+
+T0 = FEE_V2_START + 86400  # fees in force
 
 
-def meta(y0: float | None = 1.0, fee: float = 0.04) -> Meta:
+def meta(y0: float | None = 1.0, fee: float = 0.04, closed: int = T0 + 10_000) -> Meta:
     tokens = {
         f"a-{i}": TokenMeta(
             f"a-{i}", "a", i, y0 is not None, None if y0 is None else (y0 if i == 0 else 1 - y0), "ev:a", False
         )
         for i in (0, 1)
     }
-    return Meta(tokens, {"a": MarketMeta("a", "politics", fee, 10)})
+    return Meta(tokens, {"a": MarketMeta("a", "politics", fee, closed)})
 
 
-def trade(ts, side="BUY", price=0.40, size=100.0, token="a-0", tx=None):
+def trade(dt, side="BUY", price=0.40, size=100.0, token="a-0", tx=None):
     return {
-        "ts": ts,
+        "ts": T0 + dt,
         "type": "TRADE",
         "side": side,
         "price": price,
@@ -32,68 +37,107 @@ def trade(ts, side="BUY", price=0.40, size=100.0, token="a-0", tx=None):
         "token_id": token,
         "condition_id": "a",
         "usdc_size": price * size,
-        "tx_hash": tx or f"0x{ts}{side}{price}",
+        "tx_hash": tx or f"0x{dt}{side}{price}",
     }
 
 
-def flat(price: float):
-    return lambda token, ts: price
+class Flat:
+    """Price book returning a constant price, stamped `lag` seconds after the requested time."""
+
+    def __init__(self, price, lag=0):
+        self.price, self.lag = price, lag
+
+    def point(self, token, ts):
+        return None if self.price is None else (ts + self.lag, self.price)
+
+    def __call__(self, token, ts):
+        return self.price
+
+
+def sim(rows, m, book, **kw):
+    params = CopyParams(**{"max_premium": 0.05} | kw)
+    return simulate_copy(rows, m, book, start=T0, end=T0 + 5000, params=params, wallet="w", labels=LotLabels("p"))
 
 
 def test_price_book_lookup():
     book = PriceBook({"t": [(100, 0.4), (160, 0.5)]}, max_wait_s=30)
-    assert book("t", 90) == 0.4
+    assert book.point("t", 90) == (100, 0.4)
     assert book("t", 101) is None  # next point is 59 s away
     assert book("t", 150) == 0.5
-    assert book("t", 200) is None
-    assert book("x", 100) is None
+    assert book("t", 200) is None and book("x", 100) is None
 
 
-def test_follower_pays_spread_and_fee_and_wins_at_resolution():
-    p = CopyParams(latency_s=60, stake_usdc=100, half_spread=0.01, max_premium=0.02)
-    r = simulate_copy([trade(1000)], meta(1.0), flat(0.40), start=0, end=2000, params=p)
-    price = 0.41
-    shares = 100 / price
-    assert r.n_filled == 1
-    assert r.fees == pytest.approx(taker_fee(shares, price, 0.04))
-    assert r.pnl == pytest.approx(shares - 100 - r.fees)
-    assert r.leader_pnl == pytest.approx(100 / 0.40 - 100)
-    assert r.pnl < r.leader_pnl
+def test_filled_lot_pays_spread_fee_and_settles():
+    [lot] = sim([trade(10)], meta(1.0), Flat(0.40, lag=30), half_spread=0.01, max_premium=0.02)
+    price, shares = 0.41, 100 / 0.41
+    assert lot.filled and lot.exec_ts == T0 + 10 + 60 + 30 and lot.ref_price == 0.40
+    assert lot.entry_fee == pytest.approx(taker_fee(shares, price, 0.04))
+    assert lot.pnl == pytest.approx(shares - 100 - lot.entry_fee)
+    assert lot.bench_pnl == pytest.approx(100 / 0.40 - 100)
+    assert lot.slippage_usd == pytest.approx(0.01 * shares)
+    assert lot.close_ts == T0 + 10_000
+    assert lot.flows == [(lot.exec_ts, -lot.entry_fee, 100), (T0 + 10_000, shares - 100, -100)]
 
 
-def test_signal_skipped_when_price_ran_away_or_missing():
-    p = CopyParams(max_premium=0.015, half_spread=0.01)
-    r = simulate_copy([trade(1000)], meta(), flat(0.43), start=0, end=2000, params=p)
-    assert r.n_filled == 0 and r.skips["premium"] == 1
-    r = simulate_copy([trade(1000)], meta(), lambda t, ts: None, start=0, end=2000, params=p)
-    assert r.skips["no_price"] == 1
-    r = simulate_copy([trade(1000, price=0.985)], meta(), flat(0.975), start=0, end=2000, params=p)
-    assert r.skips["extreme_price"] == 1
+def test_no_fees_before_fee_regime():
+    early = meta(1.0)
+    rows = [dict(trade(10), ts=FEE_V2_START - 86400 * 30)]
+    lots = simulate_copy(rows, early, Flat(0.40), start=0, end=FEE_V2_START, params=CopyParams(max_premium=0.05))
+    assert lots[0].entry_fee == 0.0
 
 
-def test_only_signals_inside_window_are_copied_but_history_sizes_exits():
-    rows = [trade(10, size=100), trade(1000, size=100), trade(1500, side="SELL", price=0.6, size=100)]
-    p = CopyParams(half_spread=0.0, max_premium=0.05)
-    r = simulate_copy(rows, meta(0.0), flat(0.4), start=500, end=2000, params=p)
-    assert r.n_signals == 1
-    # leader held 200 before selling 100 -> follower exits half; the rest loses at resolution
-    shares = 100 / 0.4
-    assert r.proceeds == pytest.approx(shares / 2 * 0.4)
-    assert r.settled == 0.0
+def test_skip_reasons_and_missed_benchmark():
+    [a] = sim([trade(10)], meta(1.0), Flat(0.43), half_spread=0.01, max_premium=0.015)
+    assert a.status == "skip:premium" and a.pnl == 0.0
+    assert a.bench_pnl == pytest.approx(100 / 0.40 - 100)  # what the leader made on the missed signal
+    [b] = sim([trade(10)], meta(), Flat(None))
+    assert b.status == "skip:no_price"
+    [c] = sim([trade(10, price=0.985)], meta(), Flat(0.975), half_spread=0.01)
+    assert c.status == "skip:extreme_price"
 
 
-def test_unresolved_positions_marked_at_cost():
-    p = CopyParams(half_spread=0.0, max_premium=0.05)
-    r = simulate_copy([trade(1000)], meta(None, fee=0.0), flat(0.4), start=0, end=2000, params=p)
-    assert r.pnl == pytest.approx(0.0)
-    assert r.leader_pnl == pytest.approx(0.0)
-    assert r.open_cost == pytest.approx(100.0)
+def test_history_sizes_proportional_exit_and_follower_capped_at_leader():
+    rows = [trade(-500, size=100), trade(10, size=100), trade(1500, side="SELL", price=0.30, size=100)]
+    [lot] = sim(rows, meta(0.0), Flat(0.42), half_spread=0.0)
+    # entry at max(0.42, 0.40); leader held 200 and sold 100 -> half exits at min(0.42, 0.30); rest loses
+    shares = 100 / 0.42
+    assert lot.exit_proceeds == pytest.approx(shares / 2 * 0.30)
+    assert lot.settle_value == 0.0
+    assert lot.pnl == pytest.approx(shares / 2 * 0.30 - 100 - lot.fees)
+    assert sum(dc for _, _, dc in lot.flows) == pytest.approx(0.0)  # all capital returned or written off
+    assert sum(dp for _, dp, _ in lot.flows) == pytest.approx(lot.pnl)
 
 
-def test_max_signals_cap():
-    rows = [trade(1000 + i) for i in range(10)]
-    r = simulate_copy(rows, meta(), flat(0.4), start=0, end=5000, params=CopyParams(max_signals=3, max_premium=0.05))
-    assert r.n_signals == 3
+def test_unresolved_marked_at_cost():
+    [lot] = sim([trade(10)], meta(None, fee=0.0), Flat(0.4), half_spread=0.0)
+    assert lot.pnl == pytest.approx(0.0) and lot.open_cost == pytest.approx(100.0)
+    assert lot.bench_pnl == pytest.approx(0.0)
+
+
+def test_resolve_as_of_hides_later_outcomes():
+    rows = [trade(10)]
+    lots = simulate_copy(
+        rows, meta(1.0, closed=T0 + 10_000), Flat(0.4), start=T0, end=T0 + 5000,
+        params=CopyParams(max_premium=0.05), resolve_as_of=T0 + 5000,
+    )  # fmt: skip
+    assert lots[0].open_cost > 0 and lots[0].settle_value == 0.0
+
+
+def test_book_sweep_is_one_signal_priced_at_worst_level():
+    sweep = [trade(10, price=p, tx="0xs") for p in (0.30, 0.32, 0.34)]
+    [order] = aggregate_orders(sweep)
+    assert order["size"] == 300 and order["price"] == pytest.approx(0.32) and order["worst_price"] == 0.34
+    [lot] = sim(sweep, meta(1.0, fee=0.0), Flat(0.30), half_spread=0.01, max_premium=0.03)
+    assert lot.exec_price == 0.34 and lot.pnl == pytest.approx(100 / 0.34 - 100)
+
+
+def test_max_signals_cap_and_summary_consistency():
+    rows = [trade(10 + i, tx=f"0x{i}") for i in range(10)]
+    lots = sim(rows, meta(1.0), Flat(0.4), max_signals=3, half_spread=0.0)
+    assert len(lots) == 3
+    s = summarize(lots, n_boot=50)
+    assert s["filled"] == 3 and s["cost"] == 300 and s["pnl"] == pytest.approx(sum(lot.pnl for lot in lots))
+    assert s["peak_capital"] == 300
 
 
 def test_spearman():
@@ -102,46 +146,18 @@ def test_spearman():
     assert spearman([1, 2], [1, 2]) is None
 
 
-def test_summarize_and_selection():
+def test_selection_samples_each_exclusion_reason_and_predictive_check():
     from sniper.analytics import Features, SkillStats
     from sniper.scoring import WalletScore
 
     f = Features(1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 0, 0, 0, {})
     k = SkillStats(0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0)
-    scores = [
-        WalletScore(f"w{i}", None, f, k, [], tier=t) for i, t in enumerate(["candidate", "noise", "noise", "excluded"])
-    ]
-    chosen = choose_wallets_to_simulate(scores, include_excluded=1, include_noise=1)
-    assert [s.tier for s in chosen].count("noise") == 1 and len(chosen) == 3
-    res = simulate_copy([trade(1000)], meta(1.0), flat(0.4), start=0, end=2000, params=CopyParams(max_premium=0.05))
-    [summary] = summarize([(scores[0], res)], latency_s=60)
-    assert summary.tier == "candidate" and summary.filled == 1 and summary.roi == pytest.approx(res.roi)
-
-
-def test_follower_never_buys_cheaper_or_sells_dearer_than_leader():
-    p = CopyParams(half_spread=0.01, max_premium=0.05)
-    # stale history price 0.10 right after the leader bought at 0.60: follower pays the leader's price
-    r = simulate_copy([trade(1000, price=0.60)], meta(1.0), flat(0.10), start=0, end=2000, params=p)
-    assert r.n_filled == 1 and r.mean_premium == pytest.approx(0.0)
-    assert r.pnl == pytest.approx(100 / 0.60 - 100 - r.fees)
-    # entry at max(0.42 + 0.01, 0.40) = 0.43; the leader dumps at 0.30 -> follower exits at min(0.41, 0.30)
-    rows = [trade(1000, price=0.40), trade(1100, side="SELL", price=0.30, size=100)]
-    r = simulate_copy(rows, meta(0.0), flat(0.42), start=0, end=2000, params=p)
-    assert r.n_filled == 1
-    assert r.proceeds == pytest.approx(100 / 0.43 * 0.30)
-
-
-def test_book_sweep_is_one_signal_priced_at_worst_level():
-    from sniper.backtest import aggregate_orders
-
-    sweep = [
-        trade(1000, price=0.03, size=100, tx="0xs"),
-        trade(1000, price=0.05, size=100, tx="0xs"),
-        trade(1000, price=0.07, size=100, tx="0xs"),
-    ]
-    [order] = aggregate_orders(sweep)
-    assert order["size"] == 300 and order["price"] == pytest.approx(0.05) and order["worst_price"] == 0.07
-    p = CopyParams(half_spread=0.01, max_premium=0.03, min_price=0.0)
-    r = simulate_copy(sweep, meta(1.0, fee=0.0), flat(0.03), start=0, end=2000, params=p)
-    assert r.n_signals == 1 and r.n_filled == 1
-    assert r.pnl == pytest.approx(100 / 0.07 - 100)  # not 100 / 0.04: the cheap levels are gone
+    tiers = [("candidate", ""), ("noise", ""), ("noise", ""), ("excluded", "mm_or_arb"), ("excluded", "fast_runaway")]
+    scores = [WalletScore(f"w{i}", None, f, k, [], tier=t, style=st) for i, (t, st) in enumerate(tiers)]
+    chosen = choose_wallets_to_simulate(scores, n_noise=1, n_per_exclusion=1)
+    assert [s.tier for s in chosen].count("noise") == 1
+    assert {s.style for s in chosen if s.tier == "excluded"} == {"mm_or_arb", "fast_runaway"}
+    lots = [lot for i in range(6) for lot in sim([trade(10 + i, tx=f"0x{i}")], meta(1.0), Flat(0.4))]
+    for lot in lots:
+        lot.wallet = "w0"
+    assert predictive_check(lots, scores, latency_s=60)["wallets"] == 1
