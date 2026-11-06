@@ -399,8 +399,10 @@ def _md_table(rows: Sequence[dict[str, Any]], cols: Sequence[tuple[str, str]]) -
         cells = []
         for key, _ in cols:
             v = r.get(key)
-            if key in ("roi", "leader_roi", "missed_share", "max_drawdown_pct_capital", "open_share"):
+            if key in ("roi", "leader_roi"):
                 cells.append(_pct(v))
+            elif key in ("missed_share", "max_drawdown_pct_capital", "open_share"):
+                cells.append("n/a" if v is None else f"{v:.1%}")
             elif key == "roi_ci95":
                 cells.append(metrics.fmt_ci(v))
             elif isinstance(v, float):

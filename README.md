@@ -1,58 +1,74 @@
 # sniper.polymaster
 
-Polymarket Sniper ищет игроков с устойчивым преимуществом, проверяет, навык это или удача, и моделирует,
-сколько заработал бы копировщик. Позже система будет слать алерты в Telegram и вести paper trading.
+Polymarket Sniper ищет игроков с устойчивым преимуществом, проверяет, навык это или удача, моделирует, сколько
+заработал бы копировщик, и в реальном времени шлёт алерты в Telegram с paper trading по живым стаканам.
+**Реальной торговли нет и не будет без отдельного решения:** код не размещает ордера и не работает с ключами.
 
-**Статус:** фаза 1 (данные, скоринг, бэктест копирования). Только чтение публичных API: без ключей и без торговли.
-- Исследование и обоснование методики: [docs/research/2026-11-06-polymarket-sniper.md](docs/research/2026-11-06-polymarket-sniper.md)
-- Результаты фазы 1 (walk-forward копирования): [docs/research/2026-11-06-phase1-walkforward.md](docs/research/2026-11-06-phase1-walkforward.md)
+Статус и документы:
+- Исследование и методика: [docs/research/2026-11-06-polymarket-sniper.md](docs/research/2026-11-06-polymarket-sniper.md)
+- Фаза 1 (один срез): [docs/research/2026-11-06-phase1-walkforward.md](docs/research/2026-11-06-phase1-walkforward.md)
+- Итерация 2: [предрегистрация](docs/research/2026-11-06-iteration2-preregistration.md),
+  [разбор «10 с против 60 с»](docs/research/2026-11-06-latency-discrepancy.md),
+  [результаты](docs/research/2026-11-06-iteration2-results.md)
 - Текущее состояние и следующие шаги: [docs/handoff](docs/handoff)
 
 ## Установка
 
 ```bash
 uv sync                 # Python ≥ 3.11
-cp .env.example .env    # необязательно: путь к БД, доля лимитов API
+cp .env.example .env    # необязательно: путь к БД, доля лимитов API, Telegram
 uv run pytest           # unit-тесты
 ```
 
-## Пайплайн
+## Walk-forward на нескольких периодах
+
+Периоды и роли (`dev` / `holdout`) задаются в `config/walkforward.toml`; правила решения — в предрегистрации.
 
 ```bash
-# 1. Вселенная кандидатов
-#    a) из рынков, закрытых в окне: отбор без взгляда на результат, подходит для бэктестов
-uv run sniper universe markets --end-min 2026-03-01T00:00:00Z --end-max 2026-08-25T00:00:00Z --markets 150
-#    b) из лидербордов: смещена в пользу победителей, годится только для live-watchlist
-uv run sniper universe leaderboard --periods month,all --categories overall,politics,sports --limit 200
-
-# 2. Активность кошельков (сделки, включая maker-сделки, а также merge, redeem, conversion, ребейты)
-uv run sniper backfill --since 2026-01-01 --max-items 20000
-
-# 3. Резолюции токенов, события, neg-risk, категории и комиссии рынков
-uv run sniper enrich
-
-# 4. Скоринг: фильтры архетипов → Z-тест против цены входа (кластеры событий) → BH/BY → shrinkage → тир
-uv run sniper score --out reports/scores.csv
-
-# 5. Walk-forward: скоринг до среза, симуляция копирования после него при разных задержках
-uv run sniper backtest --split 2026-09-01 --gap-days 7 --horizon-days 45 --latencies 10,60,300,900
+export SNIPER_DB_PATH=data/live.sqlite
+uv run sniper wf collect --role dev                  # вселенная, бэкфилл по окнам, обогащение (часы: лимиты API)
+uv run sniper wf evaluate --role dev                 # скоринг до среза + фильтр быстрых сделок → симуляция
+uv run sniper wf report --role dev                   # reports/walkforward/report-dev.md
+# holdout — один раз, на закоммиченном коде:
+uv run sniper wf evaluate --role holdout --confirm-holdout
+uv run sniper wf report --role holdout
 ```
 
-Тиры: `candidate` (BH q ≤ 0.05 и 20-й перцентиль θ̃ > 0), `watch` (q ≤ 0.10, θ̃ > 0), `noise`,
-`insufficient` (меньше 30 событий или меньше 90 дней истории), `excluded` (бот, маркетмейкер или арбитражёр,
-скупка «почти наверняка», прибыль от одного события).
+Что считается для каждой группы (тир × стратегия × задержка, стиль трейдера, категория рынка, отдельный трейдер):
+число сигналов и сделок, пропуски по причинам и упущенный PnL лидера, вложенный капитал и его пик, комиссии,
+проскальзывание к цене лидера, PnL, ROI с 95% доверительным интервалом (бутстрэп по событиям), максимальная просадка.
+
+Стратегии: `position` (основная; копируется вход лидера в позицию ≥ $100) и `baseline` (каждый ордер, как в фазе 1).
+
+## Paper trading и Telegram (фаза 2)
+
+```bash
+uv run sniper wf watchlist --out reports/watchlist.csv     # свежий отбор на сегодня по замороженным правилам
+uv run sniper live run --scores reports/watchlist.csv --track-tiers candidate,watch --control-sample 30 \
+    --delays 0,10,60,300 --paper-db data/paper.sqlite
+uv run sniper live report --paper-db data/paper.sqlite --out reports/paper.json
+```
+
+- Поток сделок RTDS → агрегация филлов в ордера → для каждой задержки (0/10/60/300 с) снимок стакана CLOB →
+  решение по реальному стакану (премия к лидеру, глубина, минимальный размер, риск-лимиты) → paper-позиции,
+  выходы вслед за лидером, расчёт при резолюции, mark-to-market.
+- Алерты уходят в Telegram, если заданы `SNIPER_TELEGRAM_BOT_TOKEN` и `SNIPER_TELEGRAM_CHAT_ID` (секреты проекта,
+  не репозиторий). Без них — dry-run в `data/alerts.log`. Команды бота: `/status`, `/portfolio`, `/watchlist`,
+  `/pause`, `/resume`, `/report`; отвечает только своему чату.
+- Риск по умолчанию: виртуальный банк $10 000 на каждую задержку, ставка $100 (или ¼ Kelly), лимиты 2% на рынок,
+  5% на событие, 15% на лидера, 30% на категорию, 50% всего; дневной стоп −3%, недельный −7%, kill-switch −15% от пика.
 
 ## Структура
 
 | Модуль | Назначение |
 |---|---|
-| `src/sniper/http.py` | async HTTP: token bucket по маршрутам, ретраи 429/5xx, cursor-пагинация |
-| `src/sniper/polymarket.py` | клиенты Data API v2, Gamma, CLOB (минутная история цен) |
-| `src/sniper/db.py` | SQLite-хранилище (идемпотентные upsert) |
-| `src/sniper/ingest.py` | вселенная, бэкфилл, обогащение, окна цен |
-| `src/sniper/analytics.py` | ставки, PnL, признаки, статистика навыка, FDR, empirical Bayes |
-| `src/sniper/scoring.py` | флаги архетипов, тиры, CSV и JSON |
-| `src/sniper/backtest.py` | симуляция копировщика, walk-forward, сводки |
-| `research/leaderboard_probe.py` | первая быстрая проба лидерборда (исследование) |
+| `src/sniper/http.py`, `polymarket.py` | async-клиенты Data API v2, Gamma, CLOB с лимитами и ретраями |
+| `src/sniper/db.py`, `ingest.py` | SQLite, покрытие активности по окнам, бэкфилл, обогащение, кэш цен |
+| `src/sniper/analytics.py`, `scoring.py` | ставки, PnL, Z-тест с кластерами, BH/BY, shrinkage, флаги, тиры |
+| `src/sniper/copyability.py` | строгий фильтр быстрых сделок |
+| `src/sniper/backtest.py`, `metrics.py`, `fees.py` | симуляция копировщика, журнал сделок, метрики, комиссии по датам |
+| `src/sniper/plan.py`, `walkforward.py` | план периодов, сбор, оценка, отчёты, защита holdout |
+| `src/sniper/live/` | фаза 2: RTDS, стакан, сигналы, paper-движок, риск, Telegram, отчёт |
+| `research/` | разовые исследовательские скрипты |
 
-> ⚠️ Репозиторий публичный: никогда не коммитьте приватные ключи, API-ключи и `.env`.
+> ⚠️ Репозиторий публичный: никогда не коммитьте приватные ключи, токены и `.env`.
