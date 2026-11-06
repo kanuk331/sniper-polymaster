@@ -122,3 +122,45 @@ def test_holdout_guard(tmp_path, monkeypatch):
     (tmp_path / "HOLDOUT_EVALUATED").write_text("commit abc123")
     with pytest.raises(SystemExit, match="already evaluated"):
         walkforward.holdout_guard(hold, tmp_path, confirm=True, allow_rerun=False)
+
+
+def _write_period(root, name, lots_):
+    import json
+
+    from sniper.walkforward import write_lots
+
+    d = root / name
+    d.mkdir(parents=True)
+    summary = {"universe": {"wallets": 10, "status": {"complete": 10}}, "score_tiers": {"tiers": {"noise": 5}},
+               "copyability_flags": {}, "commit": "abcdef123456", "predictive": []}  # fmt: skip
+    (d / "summary.json").write_text(json.dumps(summary))
+    write_lots(lots_, d / "lots.csv.gz")
+
+
+def test_report_decision_h1_h2(tmp_path):
+    from sniper import walkforward
+    from sniper.plan import Period
+
+    periods = [Period("pa", "2025-01-01", "holdout"), Period("pb", "2025-04-01", "holdout")]
+
+    def run(root, pnls):
+        for p in periods:
+            noise = [
+                lot(f"{p.name}-e{i}", pnl=x, period=p.name, strategy="position", tier="noise", wallet=f"w{i % 5}")
+                for i, x in enumerate(pnls)
+            ]
+            _write_period(root, p.name, noise + [lot(f"{p.name}-b", pnl=99.0, period=p.name, strategy="baseline")])
+        return walkforward.report(periods, root, label="t", primary="position", decision_latency=60, n_boot=200)
+
+    d = run(tmp_path / "edge", [30.0] * 40 + [-20.0] * 10)["decision"]
+    h2 = d["h2_eligible"]
+    assert d["h1_candidate"] is None  # the only candidate lots belong to the non-primary strategy
+    assert (h2["filled"], h2["events"], h2["wallets"]) == (100, 100, 5)
+    assert h2["level"] == pytest.approx(0.975) and h2["roi"] == pytest.approx(0.2)
+    assert h2["supported"] and d["supported"]
+    md = (tmp_path / "edge" / "report-t.md").read_text()
+    assert "H2, candidate + watch + noise" in md and "→ **подтверждено**" in md
+
+    d = run(tmp_path / "flat", [20.0, -20.0] * 25)["decision"]
+    assert d["h2_eligible"]["roi"] == pytest.approx(0.0)
+    assert not d["h2_eligible"]["supported"] and not d["supported"]

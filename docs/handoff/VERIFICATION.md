@@ -134,3 +134,12 @@
 - В runner-тесте агента явно задан `signal_mode="order"`: тест проверяет путь «каждый ордер», а по умолчанию теперь `position`.
 - `sniper live run --help` показывает `--signal-mode {position,order}` и `--min-leader-notional`.
 - Не проверено: реальная отправка в Telegram (нет токена); выходы по продажам и merge в live — только unit-тесты.
+
+## 2026-11-06 — тред melos, чекпоинт 1
+- WIP `dbc52e3` в отдельной копии (`git archive` → /tmp): `uv run pytest` → 132 passed; ruff check/format → чисто.
+- После доработки: `uv run pytest` → **133 passed**. Новый `test_report_decision_h1_h2`: два периода; H1 без сделок
+  основной стратегии → None; H2 с ROI +20% на 100 событиях → подтверждено на уровне 97.5%; H2 с ROI 0 → не
+  подтверждено. `ruff check`, `ruff format --check` → чисто.
+- Telegram Bot API (только чтение): `getMe` → ok, @flamered_bot; вебхука нет; `getUpdates` → 0 обновлений,
+  chat_id пока неизвестен. Переменные `SNIPER_TELEGRAM_*` в окружении проекта не заданы.
+- `git check-ignore`: `.env`, `data/`, `logs/`, `reports/`, `.hoplite/attachments/` игнорируются.

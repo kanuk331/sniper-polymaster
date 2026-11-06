@@ -424,8 +424,17 @@ METRIC_COLS = [
 
 
 def report(
-    periods: Sequence[Period], out_root: Path, *, label: str, primary: str, decision_latency: int, n_boot: int = 1000
+    periods: Sequence[Period],
+    out_root: Path,
+    *,
+    label: str,
+    primary: str,
+    decision_latency: int,
+    n_boot: int = 1000,
+    alpha: float = 0.0125,
 ) -> dict[str, Any]:
+    """Pool evaluated periods. Confirmatory tests (preregistration §7): H1 candidate, H2 candidate+watch+noise,
+    each one-sided at `alpha` (0.025 split over the two)."""
     loaded = []
     for p in periods:
         d = out_root / p.name
@@ -475,19 +484,54 @@ def report(
                         "per_period": per} | s)  # fmt: skip
     traders.sort(key=lambda r: (-r["periods_as_lead"], -(r["roi_ci95"] or (-9, -9))[0]))
 
-    cand = [x for x in lots if x.strategy == primary and x.tier == "candidate" and x.latency_s == decision_latency]
-    noise = [x for x in lots if x.strategy == primary and x.tier == "noise" and x.latency_s == decision_latency]
+    def pool(tiers: tuple[str, ...]) -> list[Lot]:
+        return [x for x in lots if x.strategy == primary and x.tier in tiers and x.latency_s == decision_latency]
+
+    cand, noise, eligible = pool(("candidate",)), pool(("noise",)), pool(("candidate", "watch", "noise"))
     cand_s = metrics.summarize(cand, n_boot=n_boot) if cand else None
     noise_s = metrics.summarize(noise, n_boot=n_boot) if noise else None
+    eligible_s = metrics.summarize(eligible, n_boot=n_boot) if eligible else None
     per_cand = [r for r in per_period if r["tier"] == "candidate"]
+
+    def confirm(group: list[Lot]) -> dict[str, Any] | None:
+        """One-sided test of ROI > 0 at level alpha: lower bound of the (1 - 2*alpha) cluster-bootstrap CI."""
+        filled = [x for x in group if x.filled]
+        if not filled:
+            return None
+        cost = sum(x.cost for x in filled)
+        # Tail quantiles at alpha ~1% need more resamples than the descriptive 95% intervals.
+        ci = metrics.cluster_bootstrap_ratio(
+            [x.pnl for x in filled], [x.cost for x in filled], [x.event_key for x in filled],
+            n_boot=max(n_boot, 5000), alpha=2 * alpha,
+        )  # fmt: skip
+        return {"roi": sum(x.pnl for x in filled) / cost if cost else 0.0, "filled": len(filled),
+                "events": len({x.event_key for x in filled}), "wallets": len({x.wallet for x in filled}),
+                "ci": ci, "level": 1 - 2 * alpha, "supported": bool(ci and ci[0] > 0)}  # fmt: skip
+
+    h1, h2 = confirm(cand), confirm(eligible)
+
+    per_eligible = [
+        {"period": p.name} | metrics.summarize(
+            [x for x in ls if x.strategy == primary and x.tier in ("candidate", "watch", "noise")
+             and x.latency_s == decision_latency], n_boot=n_boot)
+        for p, _, ls in loaded
+    ]  # fmt: skip
     decision = {
         "primary_strategy": primary,
         "decision_latency_s": decision_latency,
+        "alpha_per_hypothesis": alpha,
         "candidate_pooled": cand_s,
         "noise_pooled": noise_s,
+        "eligible_pooled": eligible_s,
+        "h1_candidate": h1,
+        "h2_eligible": h2,
+        "per_period_eligible": [
+            {k: r.get(k) for k in ("period", "signals", "filled", "roi", "roi_ci95", "wallets")} for r in per_eligible
+        ],
         "periods_with_candidates": len(per_cand),
         "periods_candidate_roi_positive": sum(r["roi"] > 0 for r in per_cand),
-        "supported": bool(cand_s and cand_s["roi_ci95"] and cand_s["roi_ci95"][0] > 0),
+        # Family-wise one-sided level 2 * alpha (Bonferroni over H1 and H2).
+        "supported": bool((h1 and h1["supported"]) or (h2 and h2["supported"])),
         "repeatable_traders": [
             t["user_name"] or t["wallet"] for t in traders
             if t["periods_as_lead"] >= 2 and t["roi_ci95"] and t["roi_ci95"][0] > 0
@@ -505,14 +549,31 @@ def report(
 
 def render_markdown(r: dict[str, Any], primary: str, lat: int) -> str:
     d = r["decision"]
-    c = d["candidate_pooled"]
+
+    def hypothesis(title: str, h: dict[str, Any] | None) -> str:
+        if not h:
+            return f"- **{title}:** нет исполненных сделок, проверить нельзя."
+        verdict = "подтверждено" if h["supported"] else "не подтверждено"
+        return (
+            f"- **{title}:** ROI {_pct(h['roi'])}, сделок {h['filled']}, событий {h['events']}, кошельков"
+            f" {h['wallets']}; {h['level']:.1%} ДИ {metrics.fmt_ci(h['ci'])} → **{verdict}**"
+        )
+
     lines = [
         f"# Walk-forward: {r['label']} ({', '.join(r['periods'])})",
         "",
-        f"Основная стратегия `{primary}`, задержка {lat} с. Решение: ROI candidate (пул по периодам) — "
-        + (f"{_pct(c['roi'])}, 95% ДИ {metrics.fmt_ci(c['roi_ci95'])}, сделок {c['filled']}" if c else "нет candidate")
-        + f"; ROI > 0 в {d['periods_candidate_roi_positive']} из {d['periods_with_candidates']} периодов с candidate;"
-        + f" статистически подтверждено: **{'да' if d['supported'] else 'нет'}**.",
+        f"Основная стратегия `{primary}`, задержка {lat} с. Подтверждающие тесты (пул по периодам, односторонний"
+        f" уровень {d['alpha_per_hypothesis']} на гипотезу, поправка Бонферрони):",
+        "",
+        hypothesis("H1, candidate", d["h1_candidate"]),
+        hypothesis("H2, candidate + watch + noise", d["h2_eligible"]),
+        "",
+        f"ROI > 0 в {d['periods_candidate_roi_positive']} из {d['periods_with_candidates']} периодов с candidate."
+        f" Итог: статистически подтверждено — **{'да' if d['supported'] else 'нет'}**.",
+        "",
+        f"## H2 по периодам ({primary}, {lat} с)",
+        _md_table(d["per_period_eligible"], [("period", "период"), ("wallets", "кошельков"), ("signals", "сигналов"),
+                                             ("filled", "сделок"), ("roi", "ROI"), ("roi_ci95", "95% ДИ ROI")]),
         "",
         "## Периоды",
         _md_table(r["overview"], [("period", "период"), ("role", "роль"), ("conditions", "условия"),

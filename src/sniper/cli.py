@@ -199,7 +199,7 @@ async def cmd_wf_report(args: argparse.Namespace, settings: Settings, db: Databa
     label = args.label or args.role
     r = walkforward.report(
         periods, Path(args.out), label=label, primary=args.primary, decision_latency=args.decision_latency,
-        n_boot=args.n_boot,
+        n_boot=args.n_boot, alpha=args.alpha,
     )  # fmt: skip
     print(json.dumps(r["decision"], indent=1, default=str))
     print(f"written: {Path(args.out) / f'report-{label}.md'}")
@@ -315,6 +315,10 @@ def build_parser() -> argparse.ArgumentParser:
     wr.add_argument("--primary", default="position")
     wr.add_argument("--decision-latency", type=int, default=60)
     wr.add_argument("--n-boot", type=int, default=1000)
+    wr.add_argument(
+        "--alpha", type=float, default=0.0125,
+        help="one-sided level per confirmatory hypothesis (default: 0.025 Bonferroni-split over H1 and H2)",
+    )  # fmt: skip
     wr.add_argument("--out", default="reports/walkforward")
     wr.set_defaults(func=cmd_wf_report)
 
