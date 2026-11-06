@@ -164,3 +164,10 @@ def test_report_decision_h1_h2(tmp_path):
     d = run(tmp_path / "flat", [20.0, -20.0] * 25)["decision"]
     assert d["h2_eligible"]["roi"] == pytest.approx(0.0)
     assert not d["h2_eligible"]["supported"] and not d["supported"]
+
+
+def test_md_table_dict_cells():
+    from sniper.walkforward import _md_table
+
+    row = {"n": {"a": 1, "b": 3}, "s": {"p1": "+4.0% (132)", "p2": "-1.0% (5)"}}
+    assert "| b 3, a 1 | p1 +4.0% (132), p2 -1.0% (5) |" in _md_table([row], [("n", "N"), ("s", "S")])

@@ -9,7 +9,8 @@ Polymarket Sniper ищет игроков с устойчивым преимущ
 - Фаза 1 (один срез): [docs/research/2026-11-06-phase1-walkforward.md](docs/research/2026-11-06-phase1-walkforward.md)
 - Итерация 2: [предрегистрация](docs/research/2026-11-06-iteration2-preregistration.md),
   [разбор «10 с против 60 с»](docs/research/2026-11-06-latency-discrepancy.md),
-  [результаты](docs/research/2026-11-06-iteration2-results.md)
+  [результаты](docs/research/2026-11-06-iteration2-results.md). Итог: на 4 holdout-периодах (2025-02 … 2026-07)
+  копирование отобранных игроков не прибыльно, ROI пула −3.7%, 97.5% ДИ [−8.5%, +0.9%].
 - Текущее состояние и следующие шаги: [docs/handoff](docs/handoff)
 
 ## Установка

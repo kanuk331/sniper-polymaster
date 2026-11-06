@@ -408,7 +408,10 @@ def _md_table(rows: Sequence[dict[str, Any]], cols: Sequence[tuple[str, str]]) -
             elif isinstance(v, float):
                 cells.append(f"{v:,.2f}" if abs(v) < 100 else f"{v:,.0f}")
             elif isinstance(v, dict):
-                cells.append(", ".join(f"{k} {n}" for k, n in sorted(v.items(), key=lambda kv: -kv[1])))
+                # Counters sort by count; label maps (e.g. per-period "ROI (trades)") keep their order.
+                numeric = all(isinstance(n, int | float) for n in v.values())
+                items = sorted(v.items(), key=lambda kv: -kv[1]) if numeric else v.items()
+                cells.append(", ".join(f"{k} {n}" for k, n in items))
             else:
                 cells.append("" if v is None else str(v))
         body += "| " + " | ".join(cells) + " |\n"

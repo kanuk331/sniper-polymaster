@@ -166,3 +166,18 @@
   `copy_unverified`. Комиссии 0: до 2026 года taker-комиссий не было. Пропусков `no_price` ≤ 12 на группу.
   DerSimonian–Laird τ² = 0 во всех трёх периодах (Q < df). Excluded при 60 с: −7.7% / −4.0% / −2.3%.
 - Ошибок в коде не найдено → заморозка; `git status -- src config` чистый.
+
+## 2026-11-06 — тред melos: holdout и отчёты
+- Holdout оценён `research/iteration2_holdout.sh`: p2025-02, p2025-08, p2026-02, p2026-07 → exit 0. Маркер
+  `HOLDOUT_EVALUATED` и поле `commit` каждого `summary.json` = `b8c56c0` (`src/` и `config/` = `594e268`).
+- Сбор holdout: p2025-02 — 1495 кошельков (1362 полных / 133 activity_cap), p2025-08 — 2074 (1938 / 136),
+  p2026-02 — 2436 (2143 / 293), p2026-07 — 2924 (2517 / 407).
+- `sniper wf report --role holdout` на замороженном коде записал JSON и упал при рендере markdown
+  (`TypeError: bad operand type for unary -: 'str'`: словарь «ROI по периодам» в таблице трейдеров). Исправлен только
+  рендер (`_md_table`), добавлен тест `test_md_table_dict_cells`. Повторный отчёт: `decision` и весь остальной JSON
+  совпадают с запуском на замороженном коде (`diff` пустой).
+- Решение (position, 60 с, α = 0.0125 на гипотезу): H1 — 1 кошелёк, 132 сделки, ROI +4.0%, 97.5% ДИ
+  [−16.1%, +24.7%] → не подтверждено; H2 — 60 кошельков, 2 172 сделки, 1 347 событий, ROI −3.7%, 97.5% ДИ
+  [−8.5%, +0.9%] → не подтверждено.
+- `sniper wf report --role dev` (p2024-10, p2025-05, p2025-11): H2 −4.6%, 97.5% ДИ [−10.1%, +1.9%].
+- `uv run pytest` → 134 passed; `ruff check`, `ruff format --check` → чисто.
