@@ -316,6 +316,16 @@ class Shrunk:
     prior_var: float
 
 
+def dersimonian_laird_tau2(thetas: np.ndarray, ses: np.ndarray) -> float:
+    """Between-wallet variance of true edges (DerSimonian-Laird). Unlike the plain moment estimator
+    var(theta) - mean(se^2), it is not swamped by a few wallets with huge standard errors."""
+    w = 1.0 / ses**2
+    mean_w = float(np.sum(w * thetas) / np.sum(w))
+    q = float(np.sum(w * (thetas - mean_w) ** 2))
+    denom = float(np.sum(w) - np.sum(w**2) / np.sum(w))
+    return max(0.0, (q - (len(thetas) - 1)) / denom) if denom > 0 else 0.0
+
+
 def empirical_bayes(thetas: Sequence[float], ses: Sequence[float]) -> list[Shrunk]:
     """Normal-normal shrinkage (Efron-Morris): theta_i ~ N(mu, tau^2), theta_hat_i ~ N(theta_i, se_i^2)."""
     finite = [(t, s) for t, s in zip(thetas, ses, strict=True) if math.isfinite(s) and s > 0]
@@ -323,7 +333,7 @@ def empirical_bayes(thetas: Sequence[float], ses: Sequence[float]) -> list[Shrun
         return [Shrunk(t, s, t, math.inf) for t, s in zip(thetas, ses, strict=True)]
     ts = np.array([t for t, _ in finite])
     ss = np.array([s for _, s in finite])
-    tau2 = max(0.0, float(np.var(ts, ddof=1) - np.mean(ss**2)))
+    tau2 = dersimonian_laird_tau2(ts, ss)
     w = 1.0 / (tau2 + ss**2)
     mu = float(np.sum(w * ts) / np.sum(w))
     # Uncertainty of the estimated prior mean; without it tau2 = 0 would give a spuriously exact posterior.

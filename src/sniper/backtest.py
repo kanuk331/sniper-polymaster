@@ -2,8 +2,12 @@
 
 The follower reacts to each leader fill after `latency_s`, pays the CLOB history price plus `half_spread` (the
 history is ~1-minute last/mid prices, not an order book, so depth and market impact are not modelled), pays the
-category taker fee, and skips signals whose price ran away. Exits mirror the leader's sells/merges proportionally;
-everything else is held to resolution. Positions still unresolved are marked at cost (zero PnL).
+category taker fee, and skips signals whose price ran away. The follower never fills at a better price than the
+leader: right after the leader takes liquidity the history price can be stale (seen live with post-data-release
+snipers), and assuming the follower gets the price the leader just consumed inflates results.
+
+Exits mirror the leader's sells/merges proportionally; everything else is held to resolution. Positions still
+unresolved are marked at cost (zero PnL).
 
 The leader benchmark replays the same signals with the same stake at the leader's own prices and without fees, so
 `copy_efficiency` isolates what latency, spread, fees and skipped signals cost the follower.
@@ -137,7 +141,7 @@ def simulate_copy(
         if p is None:
             res.skips["no_price"] += 1
             return
-        price = p + params.half_spread
+        price = max(p + params.half_spread, r["price"])
         if price > r["price"] + params.max_premium:
             res.skips["premium"] += 1
             return
@@ -155,7 +159,7 @@ def simulate_copy(
         bench.cost[token] += params.stake_usdc
         res.leader_cost += params.stake_usdc
 
-    def exit_(token: str, frac: float, ts: int, leader_price: float) -> None:
+    def exit_(token: str, frac: float, ts: int, leader_price: float, *, leader_traded: bool = True) -> None:
         if frac <= 0:
             return
         if bench.shares[token] > 0:
@@ -163,6 +167,8 @@ def simulate_copy(
         if params.mirror_exits and follower.shares[token] > 0:
             p = price_at(token, ts + params.latency_s)
             p = max(0.0, (p if p is not None else leader_price) - params.half_spread)
+            if leader_traded:
+                p = min(p, leader_price)  # no better than the leader's own sale
             q = follower.reduce(token, frac)
             res.proceeds += q * p
             res.fees += taker_fee(q, p, fee_rate(token))
@@ -191,7 +197,13 @@ def simulate_copy(
                 leader[t.token_id] = max(0.0, before - r["size"])
                 if in_window and before > 0:
                     # A merge redeems pairs at $1; value each leg at the current price.
-                    exit_(t.token_id, min(1.0, r["size"] / before), r["ts"], price_at(t.token_id, r["ts"]) or 0.5)
+                    exit_(
+                        t.token_id,
+                        min(1.0, r["size"] / before),
+                        r["ts"],
+                        price_at(t.token_id, r["ts"]) or 0.5,
+                        leader_traded=False,
+                    )
 
     for token_id in set(follower.shares) | set(bench.shares):
         t = meta.tokens[token_id]

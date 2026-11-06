@@ -90,3 +90,10 @@
 - Живой enrich: токены ~56 запросов/с (лимит Data API 800/10 с × 0.7), Gamma `/markets` 10 248 запросов.
   Не вернулись 14 039 токенов (2%) и 2 401 рынок: их ставки не участвуют в скоринге (нет резолюции),
   причина не исследована.
+
+## 2026-11-06 — исправления после walk-forward v1
+- Тесты: `test_follower_never_buys_cheaper_or_sells_dearer_than_leader` (устаревшая цена 0.10 после покупки лидера
+  по 0.60 → копировщик платит 0.60; выход по min(история − спред, цена продажи лидера));
+  `test_dersimonian_laird_not_swamped_by_noisy_wallets` (300 из 400 кошельков с SE=3: наивный τ²=0, DL ≈ 0.04).
+- `uv run pytest` → **38 passed**; `ruff check` → All checks passed.
+- Результаты v1 (`reports/wf-2026-09.json`, не в git) недействительны, см. HISTORY.

@@ -162,3 +162,15 @@ def test_features_concentration_and_grinder():
     assert f.pnl_ex_top3 == pytest.approx(0.6)  # two remaining 0.3 grinder wins
     assert f.median_entry == pytest.approx(0.97)
     assert f.high_price_buy_share == pytest.approx(38.8 / 138.8)
+
+
+def test_dersimonian_laird_not_swamped_by_noisy_wallets():
+    from sniper.analytics import dersimonian_laird_tau2
+
+    rng = np.random.default_rng(3)
+    true = rng.normal(0.0, 0.2, 400)
+    ses = np.where(np.arange(400) < 300, 3.0, 0.05)  # most wallets have tiny samples
+    est = true + rng.normal(0.0, ses)
+    naive = max(0.0, float(np.var(est, ddof=1) - np.mean(ses**2)))
+    assert naive == 0.0
+    assert dersimonian_laird_tau2(est, ses) == pytest.approx(0.04, rel=0.5)

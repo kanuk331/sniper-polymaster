@@ -115,3 +115,16 @@ def test_summarize_and_selection():
     res = simulate_copy([trade(1000)], meta(1.0), flat(0.4), start=0, end=2000, params=CopyParams(max_premium=0.05))
     [summary] = summarize([(scores[0], res)], latency_s=60)
     assert summary.tier == "candidate" and summary.filled == 1 and summary.roi == pytest.approx(res.roi)
+
+
+def test_follower_never_buys_cheaper_or_sells_dearer_than_leader():
+    p = CopyParams(half_spread=0.01, max_premium=0.05)
+    # stale history price 0.10 right after the leader bought at 0.60: follower pays the leader's price
+    r = simulate_copy([trade(1000, price=0.60)], meta(1.0), flat(0.10), start=0, end=2000, params=p)
+    assert r.n_filled == 1 and r.mean_premium == pytest.approx(0.0)
+    assert r.pnl == pytest.approx(100 / 0.60 - 100 - r.fees)
+    # entry at max(0.42 + 0.01, 0.40) = 0.43; the leader dumps at 0.30 -> follower exits at min(0.41, 0.30)
+    rows = [trade(1000, price=0.40), trade(1100, side="SELL", price=0.30, size=100)]
+    r = simulate_copy(rows, meta(0.0), flat(0.42), start=0, end=2000, params=p)
+    assert r.n_filled == 1
+    assert r.proceeds == pytest.approx(100 / 0.43 * 0.30)
