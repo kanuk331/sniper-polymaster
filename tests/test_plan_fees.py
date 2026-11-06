@@ -61,3 +61,17 @@ def test_plan_loads_and_windows_are_independent(tmp_path):
     with pytest.raises(ValueError, match="overlap"):
         load_plan(bad)
     assert Period("x", "2026-01-01", "dev").snapshot == "wf-x"
+
+
+def test_wallet_status_cap_is_order_independent():
+    from sniper.walkforward import wallet_status
+
+    db = Database(":memory:")
+    rows = [
+        {"timestamp": 100 + i, "type": "TRADE", "side": "BUY", "price": 0.5, "size": 1, "transaction_hash": f"0x{i}"}
+        for i in range(5)
+    ]
+    db.upsert_activity([activity_record("0xw", r, slim=True) for r in rows])
+    db.add_coverage("0xw", 0, 1000)  # complete, e.g. filled in by another period's backfill
+    assert wallet_status(db, "0xw", 0, 1000, cap=10) == "complete"
+    assert wallet_status(db, "0xw", 0, 1000, cap=5) == "capped"

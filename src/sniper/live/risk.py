@@ -94,7 +94,7 @@ class RiskEngine:
         self.killed = False
         self.paused = False
 
-    # --- sizing and checks ------------------------------------------------------------------------------------
+    # --- sizing and checks --------------------------------------------------------------------------------------------
 
     def desired_stake(self, price: float, theta: float, fee_rate: float) -> float:
         if self.cfg.stake_mode == "kelly":
@@ -137,7 +137,7 @@ class RiskEngine:
             return RiskDecision(0.0, f"risk_{binding}_limit", self.usage(exp))
         return RiskDecision(approved, None, self.usage(exp, approved))
 
-    # --- state updates ------------------------------------------------------------------------------------------
+    # --- state updates ------------------------------------------------------------------------------------------------
 
     def open(self, exp: Exposure, cost: float) -> None:
         for d in DIMENSIONS:
