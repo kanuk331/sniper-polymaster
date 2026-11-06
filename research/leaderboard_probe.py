@@ -8,6 +8,7 @@ is a sanity check of the idea, not the production scoring model.
 
 Usage: python3 research/leaderboard_probe.py [--top 100] [--period month] [--out /tmp/probe.json]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -75,8 +76,11 @@ def profile(entry: dict, window_start: int) -> dict:
         "leaderboard_pnl": entry["pnl"],
         "leaderboard_volume": entry["volume"],
         "trades_sampled": len(trades),
-        "trades_per_day": len(trades) / max((max(timestamps) - min(timestamps)) / 86400, 1 / 24) if len(trades) > 1 else 0.0,
-        "short_crypto_share": sum(any(k in (t.get("slug") or "") for k in SHORT_CRYPTO_MARKERS) for t in trades) / max(len(trades), 1),
+        "trades_per_day": len(trades) / max((max(timestamps) - min(timestamps)) / 86400, 1 / 24)
+        if len(trades) > 1
+        else 0.0,
+        "short_crypto_share": sum(any(k in (t.get("slug") or "") for k in SHORT_CRYPTO_MARKERS) for t in trades)
+        / max(len(trades), 1),
         "sell_share": 1 - len(buys) / max(len(trades), 1),
         "high_price_buy_share": sum(t["price"] * t["size"] for t in buys if t["price"] >= 0.95) / buy_notional,
         # Buying both outcomes of the same market is a market-making / arbitrage signature.

@@ -76,7 +76,9 @@ def event_key_for(row: Row) -> str:
     return f"c:{row['condition_id']}"
 
 
-def load_meta(db: Any) -> Meta:
+def load_meta(db: Any, *, wallets: Iterable[str] | None = None, start: int = 0, end: int = 2**62) -> Meta:
+    """Token and market metadata; restricted to the conditions `wallets` touched in [start, end) if given."""
+    cids = db.condition_ids_for(wallets, start, end) if wallets is not None else None
     tokens = {
         tid: TokenMeta(
             token_id=tid,
@@ -87,11 +89,11 @@ def load_meta(db: Any) -> Meta:
             event_key=event_key_for(r),
             neg_risk=bool(r["neg_risk"]),
         )
-        for tid, r in db.tokens().items()
+        for tid, r in db.tokens(cids).items()
     }
     markets = {
         cid: MarketMeta(cid, r["category"] or "unknown", float(r["fee_rate"] or 0.0), r["closed_time"])
-        for cid, r in db.markets().items()
+        for cid, r in db.markets(cids).items()
     }
     return Meta(tokens, markets)
 

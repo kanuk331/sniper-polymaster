@@ -284,9 +284,12 @@ class Database:
             )
             return c.total_changes - before
 
-    def activity(self, wallet: str, *, until: int | None = None) -> list[sqlite3.Row]:
+    def activity(self, wallet: str, *, until: int | None = None, since: int | None = None) -> list[sqlite3.Row]:
         q = "SELECT * FROM activity WHERE wallet = ?"
         args: list[Any] = [wallet.lower()]
+        if since is not None:
+            q += " AND ts >= ?"
+            args.append(since)
         if until is not None:
             q += " AND ts < ?"
             args.append(until)
@@ -416,8 +419,33 @@ class Database:
                 n += 1
         return n
 
-    def tokens(self) -> dict[str, sqlite3.Row]:
-        return {r["token_id"]: r for r in self.conn.execute("SELECT * FROM tokens")}
+    def tokens(self, condition_ids: Iterable[str] | None = None) -> dict[str, sqlite3.Row]:
+        if condition_ids is None:
+            return {r["token_id"]: r for r in self.conn.execute("SELECT * FROM tokens")}
+        self._temp_keys("tmp_cids", condition_ids)
+        rows = self.conn.execute("SELECT t.* FROM tokens t JOIN tmp_cids k ON k.key = t.condition_id")
+        return {r["token_id"]: r for r in rows}
+
+    def _temp_keys(self, name: str, keys: Iterable[str]) -> None:
+        self.conn.execute(f"CREATE TEMP TABLE IF NOT EXISTS {name} (key TEXT PRIMARY KEY)")
+        self.conn.execute(f"DELETE FROM {name}")
+        self.conn.executemany(f"INSERT OR IGNORE INTO {name}(key) VALUES (?)", [(k,) for k in keys])
+
+    def condition_ids_for(self, wallets: Iterable[str], start: int, end: int) -> set[str]:
+        """Conditions these wallets touched in [start, end): via traded/redeemed tokens and merge/split rows."""
+        self._temp_keys("tmp_wallets", [w.lower() for w in wallets])
+        rows = self.conn.execute(
+            "SELECT DISTINCT t.condition_id FROM tmp_wallets w JOIN activity a ON a.wallet = w.key "
+            "JOIN tokens t ON t.token_id = a.token_id WHERE a.ts >= ? AND a.ts < ? AND a.token_id != ''",
+            (start, end),
+        )
+        out = {r[0] for r in rows}
+        rows = self.conn.execute(
+            "SELECT DISTINCT a.condition_id FROM tmp_wallets w JOIN activity a ON a.wallet = w.key "
+            "WHERE a.ts >= ? AND a.ts < ? AND a.type IN ('MERGE', 'SPLIT') AND a.condition_id != ''",
+            (start, end),
+        )
+        return out | {r[0] for r in rows}
 
     def condition_ids_needing_market(self) -> dict[str, bool]:
         """Conditions without market metadata (or stored as open but now closed) -> token-level closed flag."""
@@ -454,8 +482,12 @@ class Database:
                 n += 1
         return n
 
-    def markets(self) -> dict[str, sqlite3.Row]:
-        return {r["condition_id"]: r for r in self.conn.execute("SELECT * FROM markets")}
+    def markets(self, condition_ids: Iterable[str] | None = None) -> dict[str, sqlite3.Row]:
+        if condition_ids is None:
+            return {r["condition_id"]: r for r in self.conn.execute("SELECT * FROM markets")}
+        self._temp_keys("tmp_mcids", condition_ids)
+        rows = self.conn.execute("SELECT m.* FROM markets m JOIN tmp_mcids k ON k.key = m.condition_id")
+        return {r["condition_id"]: r for r in rows}
 
     # --- prices ----------------------------------------------------------------------------------------------------
 
